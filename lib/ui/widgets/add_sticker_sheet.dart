@@ -1,18 +1,29 @@
 import 'dart:typed_data';
+import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
+import 'package:google_fonts/google_fonts.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:sticker_flutter/services/app_permission_service.dart';
 import 'package:sticker_flutter/services/sticker_image_processor.dart';
 import 'package:sticker_flutter/services/sticker_pack_manager.dart';
 import 'package:sticker_flutter/ui/widgets/app_notification.dart';
 
+enum _CropMode {
+  fit,    // Kotak 1:1, seluruh gambar masuk kanvas
+  fill,   // Kotak 1:1, gambar memenuhi seluruh kanvas
+  circle, // Masking bulat/lingkaran
+}
+
 /// Modal bottom sheet to pick single or multiple images, preview, tag with emojis, and add to pack.
 class AddStickerSheet extends StatefulWidget {
   final String packIdentifier;
+  final Uint8List? initialImageBytes;
 
   const AddStickerSheet({
     super.key,
     required this.packIdentifier,
+    this.initialImageBytes,
   });
 
   @override
@@ -22,7 +33,20 @@ class AddStickerSheet extends StatefulWidget {
 class _AddStickerSheetState extends State<AddStickerSheet> {
   final _permissionService = AppPermissionService();
 
-  // Single-selection mode
+  // Single-selection mode & Edit state
+  static const double _canvasSize = 240.0;
+  final GlobalKey _previewKey = GlobalKey();
+  final TransformationController _transformationController = TransformationController();
+  final TextEditingController _topTextController = TextEditingController();
+  final TextEditingController _bottomTextController = TextEditingController();
+
+  _CropMode _cropMode = _CropMode.fit;
+  int _quarterTurns = 0;
+  bool _isFlipped = false;
+  double _currentScale = 1.0;
+  bool _showTextEditor = false;
+  bool _hasBlackStroke = true;
+
   Uint8List? _selectedImageBytes;
   bool _isAnimatedSticker = false;
   String? _processingMessage;
@@ -38,6 +62,62 @@ class _AddStickerSheetState extends State<AddStickerSheet> {
   final List<String> _commonEmojis = [
     '😀', '😂', '🔥', '❤️', '🎉', '👍', '😎', '🥳', '🙏', '😍', '🤩', '✨'
   ];
+
+  @override
+  void initState() {
+    super.initState();
+    _transformationController.addListener(_onTransformationChanged);
+    if (widget.initialImageBytes != null) {
+      _selectedImageBytes = widget.initialImageBytes;
+    }
+  }
+
+  @override
+  void dispose() {
+    _transformationController.removeListener(_onTransformationChanged);
+    _transformationController.dispose();
+    _topTextController.dispose();
+    _bottomTextController.dispose();
+    super.dispose();
+  }
+
+  void _onTransformationChanged() {
+    final scale = _transformationController.value.getMaxScaleOnAxis();
+    if ((scale - _currentScale).abs() > 0.05) {
+      setState(() {
+        _currentScale = scale.clamp(0.5, 3.5);
+      });
+    }
+  }
+
+  void _onSliderZoomChanged(double newScale) {
+    setState(() {
+      _currentScale = newScale;
+      _transformationController.value = Matrix4.diagonal3Values(newScale, newScale, 1.0);
+    });
+  }
+
+  void _resetTransform() {
+    setState(() {
+      _currentScale = 1.0;
+      _quarterTurns = 0;
+      _isFlipped = false;
+      _cropMode = _CropMode.fit;
+      _transformationController.value = Matrix4.identity();
+    });
+  }
+
+  void _resetEditState() {
+    _cropMode = _CropMode.fit;
+    _quarterTurns = 0;
+    _isFlipped = false;
+    _currentScale = 1.0;
+    _transformationController.value = Matrix4.identity();
+    _topTextController.clear();
+    _bottomTextController.clear();
+    _showTextEditor = false;
+    _hasBlackStroke = true;
+  }
 
   int get _remainingSlots {
     final pack = StickerPackManager().getPack(widget.packIdentifier);
@@ -76,6 +156,7 @@ class _AddStickerSheetState extends State<AddStickerSheet> {
         final bytes = await files.first.readAsBytes();
         if (!mounted) return;
         setState(() {
+          _resetEditState();
           _selectedImageBytes = bytes;
           _isAnimatedSticker = false;
           _multiSelectedBytes.clear();
@@ -185,6 +266,7 @@ class _AddStickerSheetState extends State<AddStickerSheet> {
 
           if (!mounted) return;
           setState(() {
+            _resetEditState();
             _selectedImageBytes = processed.webpBytes;
             _isAnimatedSticker = true;
             _multiSelectedBytes.clear();
@@ -335,6 +417,7 @@ class _AddStickerSheetState extends State<AddStickerSheet> {
       if (xFile != null && mounted) {
         final bytes = await xFile.readAsBytes();
         setState(() {
+          _resetEditState();
           _selectedImageBytes = bytes;
           _isAnimatedSticker = false;
           _multiSelectedBytes.clear();
@@ -375,14 +458,35 @@ class _AddStickerSheetState extends State<AddStickerSheet> {
     });
   }
 
+  Future<Uint8List?> _renderEditedStickerBytes() async {
+    if (_selectedImageBytes == null) return null;
+    if (_isAnimatedSticker) return _selectedImageBytes;
+
+    try {
+      final boundary = _previewKey.currentContext?.findRenderObject() as RenderRepaintBoundary?;
+      if (boundary == null) return _selectedImageBytes;
+
+      final pixelRatio = 512.0 / _canvasSize;
+      final uiImage = await boundary.toImage(pixelRatio: pixelRatio);
+      final byteData = await uiImage.toByteData(format: ui.ImageByteFormat.png);
+      if (byteData == null) return _selectedImageBytes;
+
+      return byteData.buffer.asUint8List();
+    } catch (e) {
+      debugPrint('Error rendering edited sticker: $e');
+      return _selectedImageBytes;
+    }
+  }
+
   Future<void> _saveSingleSticker() async {
     if (_selectedImageBytes == null) return;
 
     setState(() => _isProcessing = true);
     try {
+      final imageBytesToSave = await _renderEditedStickerBytes() ?? _selectedImageBytes!;
       await StickerPackManager().addStickerToPack(
         packIdentifier: widget.packIdentifier,
-        imageBytes: _selectedImageBytes!,
+        imageBytes: imageBytesToSave,
         emojis: _selectedEmojis,
       );
 
@@ -587,27 +691,102 @@ class _AddStickerSheetState extends State<AddStickerSheet> {
               ],
             ]
             // 2. Single Image Preview State
+            // 2. Single Image Preview State with Interactive Edit, Crop & Meme Text
             else if (_selectedImageBytes != null) ...[
               Center(
                 child: Stack(
+                  clipBehavior: Clip.none,
                   children: [
+                    // Outer Canvas with Checkerboard Background
                     Container(
-                      width: 220,
-                      height: 220,
+                      width: _canvasSize,
+                      height: _canvasSize,
                       decoration: BoxDecoration(
                         color: Colors.transparent,
-                        borderRadius: BorderRadius.circular(20),
+                        borderRadius: BorderRadius.circular(_cropMode == _CropMode.circle ? _canvasSize / 2 : 18),
                         border: Border.all(
                           color: _isAnimatedSticker ? const Color(0xFF00A884) : const Color(0xFF25D366),
                           width: 2.2,
                         ),
                       ),
                       clipBehavior: Clip.antiAlias,
-                      child: Image.memory(
-                        _selectedImageBytes!,
-                        fit: BoxFit.contain,
+                      child: Stack(
+                        fit: StackFit.expand,
+                        children: [
+                          // 1. Checkerboard Pattern (outside RepaintBoundary so transparent areas are visible)
+                          Positioned.fill(
+                            child: CustomPaint(
+                              painter: _CheckerboardPainter(
+                                color1: isDark ? const Color(0x22FFFFFF) : const Color(0x18000000),
+                                color2: isDark ? const Color(0x0DFFFFFF) : const Color(0x06000000),
+                              ),
+                            ),
+                          ),
+
+                          // 2. RepaintBoundary captures EXACT 512x512 rendered result with transparent background
+                          RepaintBoundary(
+                            key: _previewKey,
+                            child: Container(
+                              width: _canvasSize,
+                              height: _canvasSize,
+                              clipBehavior: Clip.antiAlias,
+                              decoration: BoxDecoration(
+                                color: Colors.transparent,
+                                shape: _cropMode == _CropMode.circle ? BoxShape.circle : BoxShape.rectangle,
+                              ),
+                              child: Stack(
+                                fit: StackFit.expand,
+                                children: [
+                                  if (_isAnimatedSticker)
+                                    Image.memory(
+                                      _selectedImageBytes!,
+                                      fit: BoxFit.contain,
+                                    )
+                                  else
+                                    InteractiveViewer(
+                                      transformationController: _transformationController,
+                                      minScale: 0.5,
+                                      maxScale: 4.0,
+                                      boundaryMargin: const EdgeInsets.all(120.0),
+                                      clipBehavior: Clip.none,
+                                      child: RotatedBox(
+                                        quarterTurns: _quarterTurns,
+                                        child: Transform.scale(
+                                          scaleX: _isFlipped ? -1 : 1,
+                                          child: Image.memory(
+                                            _selectedImageBytes!,
+                                            fit: _cropMode == _CropMode.fill ? BoxFit.cover : BoxFit.contain,
+                                          ),
+                                        ),
+                                      ),
+                                    ),
+
+                                  // Top Text Overlay (Roboto Bold, Uppercase, White, Black Stroke)
+                                  if (!_isAnimatedSticker && _topTextController.text.trim().isNotEmpty)
+                                    Positioned(
+                                      top: 10,
+                                      left: 10,
+                                      right: 10,
+                                      child: _buildStickerText(_topTextController.text.trim()),
+                                    ),
+
+                                  // Bottom Text Overlay (Roboto Bold, Uppercase, White, Black Stroke)
+                                  if (!_isAnimatedSticker && _bottomTextController.text.trim().isNotEmpty)
+                                    Positioned(
+                                      bottom: 10,
+                                      left: 10,
+                                      right: 10,
+                                      child: _buildStickerText(_bottomTextController.text.trim()),
+                                    ),
+                                ],
+                              ),
+                            ),
+                          ),
+                        ],
                       ),
                     ),
+
+                    // Badges & Action Buttons (OUTSIDE RepaintBoundary so they are not captured in sticker)
                     if (_isAnimatedSticker)
                       Positioned(
                         top: 8,
@@ -665,6 +844,7 @@ class _AddStickerSheetState extends State<AddStickerSheet> {
                           onTap: () => setState(() {
                             _selectedImageBytes = null;
                             _isAnimatedSticker = false;
+                            _resetEditState();
                           }),
                           child: const Padding(
                             padding: EdgeInsets.all(6.0),
@@ -676,6 +856,279 @@ class _AddStickerSheetState extends State<AddStickerSheet> {
                   ],
                 ),
               ),
+
+              // Editing Tools for Static Stickers
+              if (!_isAnimatedSticker) ...[
+                const SizedBox(height: 12),
+
+                // Quick Tool Action Bar (Fit, Putar, Mirror, Teks, Reset)
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+                  decoration: BoxDecoration(
+                    color: isDark ? const Color(0xFF1F2C34) : const Color(0xFFF0F2F5),
+                    borderRadius: BorderRadius.circular(16),
+                  ),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceAround,
+                    children: [
+                      // Fit Mode Button (Fit Kotak, Fill Penuh, Bulat)
+                      _ToolIconButton(
+                        icon: _cropMode == _CropMode.fit
+                            ? Icons.fit_screen_rounded
+                            : (_cropMode == _CropMode.fill ? Icons.crop_free_rounded : Icons.circle_outlined),
+                        label: _cropMode == _CropMode.fit
+                            ? 'Fit'
+                            : (_cropMode == _CropMode.fill ? 'Penuh' : 'Bulat'),
+                        isActive: true,
+                        onTap: () {
+                          setState(() {
+                            if (_cropMode == _CropMode.fit) {
+                              _cropMode = _CropMode.fill;
+                            } else if (_cropMode == _CropMode.fill) {
+                              _cropMode = _CropMode.circle;
+                            } else {
+                              _cropMode = _CropMode.fit;
+                            }
+                          });
+                        },
+                      ),
+                      // Rotate Button (0° -> 90° -> 180° -> 270°)
+                      _ToolIconButton(
+                        icon: Icons.rotate_right_rounded,
+                        label: 'Putar ${_quarterTurns * 90}°',
+                        isActive: _quarterTurns > 0,
+                        onTap: () {
+                          setState(() {
+                            _quarterTurns = (_quarterTurns + 1) % 4;
+                          });
+                        },
+                      ),
+                      // Mirror Button (Flip Horizontal)
+                      _ToolIconButton(
+                        icon: Icons.flip_rounded,
+                        label: 'Mirror',
+                        isActive: _isFlipped,
+                        onTap: () {
+                          setState(() {
+                            _isFlipped = !_isFlipped;
+                          });
+                        },
+                      ),
+                      // Text Editor Toggle Button
+                      _ToolIconButton(
+                        icon: Icons.text_fields_rounded,
+                        label: 'Teks',
+                        isActive: _showTextEditor || _topTextController.text.isNotEmpty || _bottomTextController.text.isNotEmpty,
+                        onTap: () {
+                          setState(() {
+                            _showTextEditor = !_showTextEditor;
+                          });
+                        },
+                      ),
+                      // Reset Transform Button
+                      _ToolIconButton(
+                        icon: Icons.restart_alt_rounded,
+                        label: 'Reset',
+                        isActive: false,
+                        onTap: _resetTransform,
+                      ),
+                    ],
+                  ),
+                ),
+
+                // Zoom Slider Row
+                const SizedBox(height: 8),
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 6),
+                  child: Row(
+                    children: [
+                      const Icon(Icons.zoom_out_rounded, size: 18, color: Colors.grey),
+                      Expanded(
+                        child: SliderTheme(
+                          data: SliderTheme.of(context).copyWith(
+                            trackHeight: 3,
+                            thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 6),
+                          ),
+                          child: Slider(
+                            value: _currentScale,
+                            min: 0.5,
+                            max: 3.5,
+                            activeColor: const Color(0xFF25D366),
+                            onChanged: _onSliderZoomChanged,
+                          ),
+                        ),
+                      ),
+                      const Icon(Icons.zoom_in_rounded, size: 18, color: Colors.grey),
+                      const SizedBox(width: 6),
+                      Text(
+                        '${(_currentScale * 100).toInt()}%',
+                        style: const TextStyle(fontSize: 11, color: Colors.grey, fontWeight: FontWeight.bold),
+                      ),
+                    ],
+                  ),
+                ),
+
+                // Expandable Meme Text Editor Card
+                if (_showTextEditor) ...[
+                  const SizedBox(height: 10),
+                  Container(
+                    padding: const EdgeInsets.all(14),
+                    decoration: BoxDecoration(
+                      color: isDark ? const Color(0xFF1F2C34) : const Color(0xFFF8F9FA),
+                      borderRadius: BorderRadius.circular(16),
+                      border: Border.all(
+                        color: const Color(0xFF25D366).withAlpha(80),
+                        width: 1.2,
+                      ),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            const Row(
+                              children: [
+                                Icon(Icons.title_rounded, size: 18, color: Color(0xFF25D366)),
+                                SizedBox(width: 6),
+                                Text(
+                                  'Teks Stiker (Roboto Bold)',
+                                  style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
+                                ),
+                              ],
+                            ),
+                            // Black stroke toggle
+                            InkWell(
+                              borderRadius: BorderRadius.circular(20),
+                              onTap: () => setState(() => _hasBlackStroke = !_hasBlackStroke),
+                              child: Padding(
+                                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                child: Row(
+                                  children: [
+                                    Text(
+                                      'Stroke Hitam',
+                                      style: TextStyle(
+                                        fontSize: 11.5,
+                                        fontWeight: FontWeight.w600,
+                                        color: _hasBlackStroke ? const Color(0xFF25D366) : Colors.grey,
+                                      ),
+                                    ),
+                                    const SizedBox(width: 4),
+                                    Icon(
+                                      _hasBlackStroke ? Icons.check_box_rounded : Icons.check_box_outline_blank_rounded,
+                                      size: 18,
+                                      color: _hasBlackStroke ? const Color(0xFF25D366) : Colors.grey,
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 10),
+
+                        // Quick Position Helpers
+                        SingleChildScrollView(
+                          scrollDirection: Axis.horizontal,
+                          child: Row(
+                            children: [
+                              _QuickTextChip(
+                                label: 'Atas & Bawah',
+                                onTap: () {},
+                              ),
+                              const SizedBox(width: 6),
+                              _QuickTextChip(
+                                label: 'Hanya Atas',
+                                onTap: () {
+                                  _bottomTextController.clear();
+                                  setState(() {});
+                                },
+                              ),
+                              const SizedBox(width: 6),
+                              _QuickTextChip(
+                                label: 'Hanya Bawah',
+                                onTap: () {
+                                  _topTextController.clear();
+                                  setState(() {});
+                                },
+                              ),
+                              const SizedBox(width: 6),
+                              _QuickTextChip(
+                                label: 'Hapus Teks',
+                                onTap: () {
+                                  _topTextController.clear();
+                                  _bottomTextController.clear();
+                                  setState(() {});
+                                },
+                              ),
+                            ],
+                          ),
+                        ),
+                        const SizedBox(height: 10),
+
+                        // Input Teks Atas
+                        TextField(
+                          controller: _topTextController,
+                          textCapitalization: TextCapitalization.characters,
+                          onChanged: (_) => setState(() {}),
+                          decoration: InputDecoration(
+                            isDense: true,
+                            hintText: 'Teks Atas (Opsional)...',
+                            hintStyle: const TextStyle(fontSize: 12),
+                            prefixIcon: const Icon(Icons.vertical_align_top_rounded, size: 18),
+                            suffixIcon: _topTextController.text.isNotEmpty
+                                ? IconButton(
+                                    icon: const Icon(Icons.clear, size: 16),
+                                    onPressed: () {
+                                      _topTextController.clear();
+                                      setState(() {});
+                                    },
+                                  )
+                                : null,
+                            filled: true,
+                            fillColor: isDark ? const Color(0xFF2A3942) : Colors.white,
+                            contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                            border: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(10),
+                              borderSide: BorderSide.none,
+                            ),
+                          ),
+                        ),
+                        const SizedBox(height: 8),
+
+                        // Input Teks Bawah
+                        TextField(
+                          controller: _bottomTextController,
+                          textCapitalization: TextCapitalization.characters,
+                          onChanged: (_) => setState(() {}),
+                          decoration: InputDecoration(
+                            isDense: true,
+                            hintText: 'Teks Bawah (Opsional)...',
+                            hintStyle: const TextStyle(fontSize: 12),
+                            prefixIcon: const Icon(Icons.vertical_align_bottom_rounded, size: 18),
+                            suffixIcon: _bottomTextController.text.isNotEmpty
+                                ? IconButton(
+                                    icon: const Icon(Icons.clear, size: 16),
+                                    onPressed: () {
+                                      _bottomTextController.clear();
+                                      setState(() {});
+                                    },
+                                  )
+                                : null,
+                            filled: true,
+                            fillColor: isDark ? const Color(0xFF2A3942) : Colors.white,
+                            contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                            border: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(10),
+                              borderSide: BorderSide.none,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ],
               const SizedBox(height: 18),
 
               // Emoji Selection Header
@@ -911,6 +1364,53 @@ class _AddStickerSheetState extends State<AddStickerSheet> {
     );
   }
 
+  Widget _buildStickerText(String text) {
+    final upperText = text.toUpperCase();
+    return FittedBox(
+      fit: BoxFit.scaleDown,
+      child: Stack(
+        alignment: Alignment.center,
+        children: [
+          if (_hasBlackStroke)
+            Text(
+              upperText,
+              textAlign: TextAlign.center,
+              maxLines: 2,
+              style: GoogleFonts.roboto(
+                fontSize: 22,
+                fontWeight: FontWeight.w900,
+                foreground: Paint()
+                  ..style = PaintingStyle.stroke
+                  ..strokeWidth = 4.5
+                  ..strokeCap = StrokeCap.round
+                  ..strokeJoin = StrokeJoin.round
+                  ..color = Colors.black,
+              ),
+            ),
+          Text(
+            upperText,
+            textAlign: TextAlign.center,
+            maxLines: 2,
+            style: GoogleFonts.roboto(
+              fontSize: 22,
+              fontWeight: FontWeight.w900,
+              color: Colors.white,
+              shadows: _hasBlackStroke
+                  ? null
+                  : const [
+                      Shadow(
+                        blurRadius: 4.0,
+                        color: Colors.black54,
+                        offset: Offset(1.0, 1.0),
+                      ),
+                    ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _buildEmojiChips() {
     return Wrap(
       spacing: 8,
@@ -1049,5 +1549,121 @@ class _PickerOptionCard extends StatelessWidget {
       ),
     );
   }
+}
+
+class _ToolIconButton extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final bool isActive;
+  final VoidCallback onTap;
+
+  const _ToolIconButton({
+    required this.icon,
+    required this.label,
+    required this.isActive,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final activeColor = const Color(0xFF25D366);
+
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(12),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              padding: const EdgeInsets.all(8),
+              decoration: BoxDecoration(
+                color: isActive ? activeColor.withAlpha(35) : (isDark ? Colors.white10 : Colors.black.withAlpha(12)),
+                shape: BoxShape.circle,
+              ),
+              child: Icon(
+                icon,
+                size: 20,
+                color: isActive ? activeColor : (isDark ? Colors.white70 : Colors.black87),
+              ),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              label,
+              style: TextStyle(
+                fontSize: 10.5,
+                fontWeight: isActive ? FontWeight.bold : FontWeight.w500,
+                color: isActive ? activeColor : Colors.grey,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _QuickTextChip extends StatelessWidget {
+  final String label;
+  final VoidCallback onTap;
+
+  const _QuickTextChip({
+    required this.label,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(8),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+        decoration: BoxDecoration(
+          color: isDark ? const Color(0xFF2A3942) : Colors.white,
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(
+            color: Colors.grey.withAlpha(50),
+          ),
+        ),
+        child: Text(
+          label,
+          style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w600),
+        ),
+      ),
+    );
+  }
+}
+
+class _CheckerboardPainter extends CustomPainter {
+  final Color color1;
+  final Color color2;
+  static const double cellSize = 12.0;
+
+  _CheckerboardPainter({
+    required this.color1,
+    required this.color2,
+  });
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final paint1 = Paint()..color = color1;
+    final paint2 = Paint()..color = color2;
+    canvas.drawRect(Rect.fromLTWH(0, 0, size.width, size.height), paint2);
+
+    for (double y = 0; y < size.height; y += cellSize) {
+      for (double x = 0; x < size.width; x += cellSize) {
+        if (((x / cellSize).floor() + (y / cellSize).floor()) % 2 == 0) {
+          canvas.drawRect(Rect.fromLTWH(x, y, cellSize, cellSize), paint1);
+        }
+      }
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
 }
 

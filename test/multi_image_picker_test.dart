@@ -160,5 +160,47 @@ void main() {
       expect(find.text('Galeri Foto'), findsNothing);
       expect(find.text('Kamera'), findsNothing);
     });
+
+    testWidgets('AddStickerSheet displays crop, rotate, mirror, zoom, and text editing tools in preview', (WidgetTester tester) async {
+      final manager = StickerPackManager();
+      manager.resetForTesting();
+      await manager.initialize(customStickersDir: tempDir.path, force: true);
+
+      final pack = await manager.createPack(name: 'Editor UI Test Pack');
+
+      final dummyImage = img.Image(width: 100, height: 100);
+      img.fill(dummyImage, color: img.ColorRgba8(255, 0, 0, 255));
+      final dummyPngBytes = Uint8List.fromList(img.encodePng(dummyImage));
+
+      await tester.pumpWidget(MaterialApp(
+        home: Scaffold(
+          body: AddStickerSheet(
+            packIdentifier: pack.identifier,
+            initialImageBytes: dummyPngBytes,
+          ),
+        ),
+      ));
+      await tester.pump();
+
+      // Verify preview title and edit tools are present
+      expect(find.text('Pratinjau Stiker'), findsOneWidget);
+      expect(find.text('Fit'), findsOneWidget);
+      expect(find.text('Putar 0°'), findsOneWidget);
+      expect(find.text('Mirror'), findsOneWidget);
+      expect(find.text('Teks'), findsOneWidget);
+      expect(find.text('Reset'), findsOneWidget);
+
+      // Tap on Rotate button
+      await tester.tap(find.text('Putar 0°'));
+      await tester.pump();
+      expect(find.text('Putar 90°'), findsOneWidget);
+
+      // Tap on Teks button to open text editor panel
+      await tester.tap(find.text('Teks'));
+      await tester.pump();
+      expect(find.text('Teks Stiker (Roboto Bold)'), findsOneWidget);
+      expect(find.text('Stroke Hitam'), findsOneWidget);
+      expect(find.text('Atas & Bawah'), findsOneWidget);
+    });
   });
 }
