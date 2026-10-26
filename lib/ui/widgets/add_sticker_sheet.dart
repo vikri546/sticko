@@ -24,6 +24,8 @@ class _AddStickerSheetState extends State<AddStickerSheet> {
 
   // Single-selection mode
   Uint8List? _selectedImageBytes;
+  bool _isAnimatedSticker = false;
+  String? _processingMessage;
 
   // Multi-selection (group) mode
   final List<Uint8List> _multiSelectedBytes = [];
@@ -42,6 +44,11 @@ class _AddStickerSheetState extends State<AddStickerSheet> {
     return 30 - (pack?.stickers.length ?? 0);
   }
 
+  bool get _isPackAnimated {
+    final pack = StickerPackManager().getPack(widget.packIdentifier);
+    return pack?.animatedStickerPack ?? false;
+  }
+
   Future<void> _pickFromGallery() async {
     final hasPermission = await _permissionService.requestGalleryPermission(context);
     if (!hasPermission || !mounted) return;
@@ -56,21 +63,29 @@ class _AddStickerSheetState extends State<AddStickerSheet> {
       return;
     }
 
+    if (_isPackAnimated) {
+      await _pickAnimatedMedia();
+      return;
+    }
+
     try {
-      // Buka galeri/photo picker yang mendukung pemilihan 1 gambar maupun banyak (grup)
       final files = await StickerImageProcessor.pickMultiImage(limit: availableSlots);
       if (files.isEmpty || !mounted) return;
 
       if (files.length == 1) {
-        // Jika hanya memilih 1 foto, masuk ke alur pratinjau stiker tunggal
         final bytes = await files.first.readAsBytes();
         if (!mounted) return;
         setState(() {
           _selectedImageBytes = bytes;
+          _isAnimatedSticker = false;
           _multiSelectedBytes.clear();
         });
       } else {
-        // Jika memilih banyak foto (grup), masuk ke alur pratinjau stiker grup
+        // Multi-image selection
+        setState(() {
+          _isProcessing = true;
+          _processingMessage = 'Memproses ${files.length} foto...';
+        });
         final newBytesList = <Uint8List>[];
         for (final file in files) {
           newBytesList.add(await file.readAsBytes());
@@ -80,15 +95,162 @@ class _AddStickerSheetState extends State<AddStickerSheet> {
           _multiSelectedBytes.clear();
           _multiSelectedBytes.addAll(newBytesList);
           _selectedImageBytes = null;
+          _isAnimatedSticker = false;
         });
       }
     } catch (e) {
       if (mounted) {
         AppNotification.show(
           context,
-          message: 'Gagal memilih gambar dari galeri: $e',
+          message: 'Gagal memilih foto dari galeri: $e',
           isSuccess: false,
         );
+      }
+    } finally {
+      if (mounted && _isProcessing) {
+        setState(() {
+          _isProcessing = false;
+          _processingMessage = null;
+        });
+      }
+    }
+  }
+
+  /// Pick animated media from gallery where both Videos AND GIFs appear in the system gallery.
+  Future<void> _pickAnimatedMedia() async {
+    final hasPermission = await _permissionService.requestGalleryPermission(context);
+    if (!hasPermission || !mounted) return;
+
+    final availableSlots = _remainingSlots;
+    if (availableSlots <= 0) {
+      AppNotification.show(
+        context,
+        message: 'Paket stiker sudah mencapai batas maksimal 30 stiker.',
+        isSuccess: false,
+      );
+      return;
+    }
+
+    try {
+      // Buka galeri yang menampilkan KEDUA media: Video dan GIF (menggunakan pickMultipleAnimatedMedia)
+      final files = await StickerImageProcessor.pickMultipleAnimatedMedia(limit: availableSlots);
+      if (files.isEmpty || !mounted) return;
+
+      if (files.length == 1) {
+        final file = files.first;
+        final isVideo = StickerImageProcessor.isVideoFile(file.path);
+
+        if (isVideo) {
+          setState(() {
+            _isProcessing = true;
+            _processingMessage = 'Mengekstrak frame video animasi (maks 10 detik)...';
+          });
+
+          final processed = await StickerImageProcessor.processVideoToStickerWebp(
+            videoPath: file.path,
+            maxDurationMs: 10000,
+          );
+
+          if (!mounted) return;
+          setState(() {
+            _selectedImageBytes = processed.webpBytes;
+            _isAnimatedSticker = true;
+            _multiSelectedBytes.clear();
+          });
+        } else {
+          // Berkas GIF atau gambar animasi
+          final bytes = await file.readAsBytes();
+          final isAnim = StickerImageProcessor.isAnimatedMedia(bytes);
+
+          if (!isAnim) {
+            if (!mounted) return;
+            AppNotification.show(
+              context,
+              message: 'Berkas yang dipilih bukan animasi. Silakan pilih GIF animasi atau video.',
+              isSuccess: false,
+            );
+            return;
+          }
+
+          if (!mounted) return;
+          setState(() {
+            _isProcessing = true;
+            _processingMessage = 'Memproses animasi GIF (maks 10 detik)...';
+          });
+
+          final processed = await StickerImageProcessor.processAnimatedToStickerWebp(
+            bytes: bytes,
+            maxDurationMs: 10000,
+          );
+
+          if (!mounted) return;
+          setState(() {
+            _selectedImageBytes = processed.webpBytes;
+            _isAnimatedSticker = true;
+            _multiSelectedBytes.clear();
+          });
+        }
+      } else {
+        // Multi-image selection for animated stickers
+        setState(() {
+          _isProcessing = true;
+          _processingMessage = 'Memproses ${files.length} berkas animasi...';
+        });
+
+        final newBytesList = <Uint8List>[];
+        for (final file in files) {
+          final isVideo = StickerImageProcessor.isVideoFile(file.path);
+          if (isVideo) {
+            final processed = await StickerImageProcessor.processVideoToStickerWebp(
+              videoPath: file.path,
+              maxDurationMs: 10000,
+            );
+            newBytesList.add(processed.webpBytes);
+          } else {
+            final bytes = await file.readAsBytes();
+            final isAnim = StickerImageProcessor.isAnimatedMedia(bytes);
+            if (isAnim) {
+              final processed = await StickerImageProcessor.processAnimatedToStickerWebp(
+                bytes: bytes,
+                maxDurationMs: 10000,
+              );
+              newBytesList.add(processed.webpBytes);
+            }
+          }
+        }
+
+        if (newBytesList.isEmpty) {
+          if (!mounted) return;
+          AppNotification.show(
+            context,
+            message: 'Tidak ada animasi valid (GIF atau video) yang dipilih.',
+            isSuccess: false,
+          );
+          return;
+        }
+
+        if (!mounted) return;
+        setState(() {
+          _multiSelectedBytes.clear();
+          _multiSelectedBytes.addAll(newBytesList);
+          _selectedImageBytes = null;
+          _isAnimatedSticker = true;
+        });
+      }
+    } catch (e) {
+      if (mounted) {
+        AppNotification.show(
+          context,
+          message: 'Gagal memproses media animasi: $e',
+          isSuccess: false,
+        );
+      }
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isProcessing = false;
+          _processingMessage = null;
+        });
       }
     }
   }
@@ -108,12 +270,38 @@ class _AddStickerSheetState extends State<AddStickerSheet> {
     }
 
     try {
-      final files = await StickerImageProcessor.pickMultiImage(limit: availableSlots);
+      final files = _isPackAnimated
+          ? await StickerImageProcessor.pickMultipleAnimatedMedia(limit: availableSlots)
+          : await StickerImageProcessor.pickMultiImage(limit: availableSlots);
       if (files.isEmpty || !mounted) return;
+
+      setState(() {
+        _isProcessing = true;
+        _processingMessage = 'Memproses berkas media tambahan...';
+      });
 
       final newBytesList = <Uint8List>[];
       for (final file in files) {
-        newBytesList.add(await file.readAsBytes());
+        final isVideo = StickerImageProcessor.isVideoFile(file.path);
+        if (isVideo) {
+          final processed = await StickerImageProcessor.processVideoToStickerWebp(
+            videoPath: file.path,
+            maxDurationMs: 10000,
+          );
+          newBytesList.add(processed.webpBytes);
+        } else {
+          final bytes = await file.readAsBytes();
+          final isAnim = StickerImageProcessor.isAnimatedMedia(bytes);
+          if (isAnim) {
+            final processed = await StickerImageProcessor.processAnimatedToStickerWebp(
+              bytes: bytes,
+              maxDurationMs: 10000,
+            );
+            newBytesList.add(processed.webpBytes);
+          } else {
+            newBytesList.add(bytes);
+          }
+        }
       }
       if (!mounted) return;
 
@@ -124,9 +312,16 @@ class _AddStickerSheetState extends State<AddStickerSheet> {
       if (mounted) {
         AppNotification.show(
           context,
-          message: 'Gagal menambah gambar dari galeri: $e',
+          message: 'Gagal menambah media dari galeri: $e',
           isSuccess: false,
         );
+      }
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isProcessing = false;
+          _processingMessage = null;
+        });
       }
     }
   }
@@ -141,6 +336,7 @@ class _AddStickerSheetState extends State<AddStickerSheet> {
         final bytes = await xFile.readAsBytes();
         setState(() {
           _selectedImageBytes = bytes;
+          _isAnimatedSticker = false;
           _multiSelectedBytes.clear();
         });
       }
@@ -294,48 +490,101 @@ class _AddStickerSheetState extends State<AddStickerSheet> {
             // Sheet Title
             Text(
               _multiSelectedBytes.isNotEmpty
-                  ? 'Grup Stiker (${_multiSelectedBytes.length} Foto)'
+                  ? 'Grup Stiker (${_multiSelectedBytes.length} ${_isPackAnimated ? "Animasi" : "Foto"})'
                   : (_selectedImageBytes != null
-                      ? 'Pratinjau Stiker'
-                      : 'Tambah Stiker Baru'),
+                      ? (_isAnimatedSticker ? 'Pratinjau Stiker Animasi' : 'Pratinjau Stiker')
+                      : (_isPackAnimated ? 'Tambah Stiker Animasi (Maks 10s)' : 'Tambah Stiker Baru')),
               style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
               textAlign: TextAlign.center,
             ),
             const SizedBox(height: 6),
             Text(
               _multiSelectedBytes.isNotEmpty
-                  ? 'Foto-foto ini akan diproses otomatis ke format WebP sesuai standar WhatsApp (< 100 KB).'
+                  ? (_isPackAnimated
+                      ? 'Animasi ini akan diproses otomatis ke format WebP sesuai standar WhatsApp (< 500 KB).'
+                      : 'Foto-foto ini akan diproses otomatis ke format WebP sesuai standar WhatsApp (< 100 KB).')
                   : (_selectedImageBytes != null
-                      ? 'Sesuaikan emoji untuk stiker ini sebelum disimpan ke koleksi.'
-                      : 'Pilih foto dari galeri atau kamera Anda untuk dijadikan stiker WhatsApp.'),
+                      ? (_isAnimatedSticker
+                          ? 'Stiker animasi WebP bergerak otomatis (maks 10 detik, < 500 KB). Pilih emoji lalu simpan.'
+                          : 'Sesuaikan emoji untuk stiker ini sebelum disimpan ke koleksi.')
+                      : (_isPackAnimated
+                          ? 'Pilih berkas GIF animasi atau video (maks 10 detik) untuk dijadikan stiker bergerak WhatsApp.'
+                          : 'Pilih foto dari galeri atau ambil foto baru dengan kamera untuk dijadikan stiker WhatsApp.')),
               style: const TextStyle(color: Colors.grey, fontSize: 13),
               textAlign: TextAlign.center,
             ),
             const SizedBox(height: 20),
 
-            // 1. Initial State: Picker Options
-            if (_selectedImageBytes == null && _multiSelectedBytes.isEmpty) ...[
-              Row(
-                children: [
-                  Expanded(
-                    child: _PickerOptionCard(
-                      icon: Icons.photo_library_rounded,
-                      label: 'Galeri Foto',
-                      color: const Color(0xFF25D366),
-                      onTap: _pickFromGallery,
+            // Processing Indicator
+            if (_isProcessing && _processingMessage != null) ...[
+              Padding(
+                padding: const EdgeInsets.symmetric(vertical: 36.0, horizontal: 16.0),
+                child: Column(
+                  children: [
+                    const SizedBox(
+                      width: 44,
+                      height: 44,
+                      child: CircularProgressIndicator(
+                        color: Color(0xFF25D366),
+                        strokeWidth: 3,
+                      ),
                     ),
-                  ),
-                  const SizedBox(width: 14),
-                  Expanded(
-                    child: _PickerOptionCard(
-                      icon: Icons.camera_alt_rounded,
-                      label: 'Kamera',
-                      color: const Color(0xFF128C7E),
-                      onTap: _pickFromCamera,
+                    const SizedBox(height: 20),
+                    Text(
+                      _processingMessage!,
+                      style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15),
+                      textAlign: TextAlign.center,
                     ),
-                  ),
-                ],
+                    const SizedBox(height: 8),
+                    Text(
+                      _isPackAnimated
+                          ? 'Sedang mengoptimalkan stiker agar memenuhi standar WhatsApp (durasi maks 10s, WebP 512x512, ukuran < 500 KB).'
+                          : 'Sedang mengoptimalkan stiker agar memenuhi standar WhatsApp (WebP 512x512, ukuran < 100 KB).',
+                      style: const TextStyle(color: Colors.grey, fontSize: 12),
+                      textAlign: TextAlign.center,
+                    ),
+                  ],
+                ),
               ),
+            ]
+            // 1. Initial State: Picker Options
+            else if (_selectedImageBytes == null && _multiSelectedBytes.isEmpty) ...[
+              if (_isPackAnimated) ...[
+                // Panel Stiker Animasi: HANYA 1 BUTTON
+                _PickerOptionCard(
+                  icon: Icons.motion_photos_on_rounded,
+                  label: 'Galeri Animasi (GIF / Video)',
+                  subtitle: 'Pilih animasi GIF atau video (maks 10 detik)',
+                  color: const Color(0xFF00A884),
+                  isHorizontal: true,
+                  onTap: _pickAnimatedMedia,
+                ),
+              ] else ...[
+                // Panel Stiker Statis Biasa: HANYA 2 BUTTON (Galeri Foto dan Kamera)
+                Row(
+                  children: [
+                    Expanded(
+                      child: _PickerOptionCard(
+                        icon: Icons.photo_library_rounded,
+                        label: 'Galeri Foto',
+                        subtitle: 'Bisa pilih banyak',
+                        color: const Color(0xFF25D366),
+                        onTap: _pickFromGallery,
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: _PickerOptionCard(
+                        icon: Icons.camera_alt_rounded,
+                        label: 'Kamera',
+                        subtitle: 'Ambil foto',
+                        color: const Color(0xFF128C7E),
+                        onTap: _pickFromCamera,
+                      ),
+                    ),
+                  ],
+                ),
+              ],
             ]
             // 2. Single Image Preview State
             else if (_selectedImageBytes != null) ...[
@@ -349,22 +598,60 @@ class _AddStickerSheetState extends State<AddStickerSheet> {
                         color: Colors.transparent,
                         borderRadius: BorderRadius.circular(20),
                         border: Border.all(
-                          color: const Color(0xFF25D366),
-                          width: 2,
+                          color: _isAnimatedSticker ? const Color(0xFF00A884) : const Color(0xFF25D366),
+                          width: 2.2,
                         ),
                       ),
                       clipBehavior: Clip.antiAlias,
-                      child: Stack(
-                        fit: StackFit.expand,
-                        children: [
-                          CustomPaint(
-                            painter: _CheckerboardPainter(),
+                      child: Image.memory(
+                        _selectedImageBytes!,
+                        fit: BoxFit.contain,
+                      ),
+                    ),
+                    if (_isAnimatedSticker)
+                      Positioned(
+                        top: 8,
+                        left: 8,
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFF00A884).withAlpha(220),
+                            borderRadius: BorderRadius.circular(6),
                           ),
-                          Image.memory(
-                            _selectedImageBytes!,
-                            fit: BoxFit.contain,
+                          child: const Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(Icons.motion_photos_on_rounded, size: 12, color: Colors.white),
+                              SizedBox(width: 4),
+                              Text(
+                                'Animasi ≤10s',
+                                style: TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 10,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                            ],
                           ),
-                        ],
+                        ),
+                      ),
+                    Positioned(
+                      bottom: 8,
+                      left: 8,
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                        decoration: BoxDecoration(
+                          color: Colors.black.withAlpha(160),
+                          borderRadius: BorderRadius.circular(6),
+                        ),
+                        child: Text(
+                          '${(_selectedImageBytes!.lengthInBytes / 1024).toStringAsFixed(0)} KB',
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 10,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
                       ),
                     ),
                     Positioned(
@@ -375,7 +662,10 @@ class _AddStickerSheetState extends State<AddStickerSheet> {
                         shape: const CircleBorder(),
                         child: InkWell(
                           customBorder: const CircleBorder(),
-                          onTap: () => setState(() => _selectedImageBytes = null),
+                          onTap: () => setState(() {
+                            _selectedImageBytes = null;
+                            _isAnimatedSticker = false;
+                          }),
                           child: const Padding(
                             padding: EdgeInsets.all(6.0),
                             child: Icon(Icons.refresh_rounded, color: Colors.white, size: 18),
@@ -412,7 +702,7 @@ class _AddStickerSheetState extends State<AddStickerSheet> {
               FilledButton.icon(
                 onPressed: _isProcessing ? null : _saveSingleSticker,
                 style: FilledButton.styleFrom(
-                  backgroundColor: const Color(0xFF25D366),
+                  backgroundColor: _isAnimatedSticker ? const Color(0xFF00A884) : const Color(0xFF25D366),
                   foregroundColor: Colors.white,
                   padding: const EdgeInsets.symmetric(vertical: 14),
                   shape: RoundedRectangleBorder(
@@ -428,11 +718,11 @@ class _AddStickerSheetState extends State<AddStickerSheet> {
                           color: Colors.white,
                         ),
                       )
-                    : const Icon(Icons.check_circle_rounded),
+                    : Icon(_isAnimatedSticker ? Icons.motion_photos_on_rounded : Icons.check_circle_rounded),
                 label: Text(
                   _isProcessing
-                      ? 'Mengompres ke Format WebP...'
-                      : 'Simpan ke Koleksi Stiker',
+                      ? 'Menyimpan...'
+                      : (_isAnimatedSticker ? 'Simpan Stiker Animasi ke Paket' : 'Simpan ke Koleksi Stiker'),
                   style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold),
                 ),
               ),
@@ -498,17 +788,11 @@ class _AddStickerSheetState extends State<AddStickerSheet> {
                         Positioned.fill(
                           child: ClipRRect(
                             borderRadius: BorderRadius.circular(10),
-                            child: Stack(
-                              fit: StackFit.expand,
-                              children: [
-                                CustomPaint(painter: _CheckerboardPainter()),
-                                Image.memory(
-                                  bytes,
-                                  fit: BoxFit.contain,
-                                  cacheWidth: 150,
-                                  cacheHeight: 150,
-                                ),
-                              ],
+                            child: Image.memory(
+                              bytes,
+                              fit: BoxFit.contain,
+                              cacheWidth: 150,
+                              cacheHeight: 150,
                             ),
                           ),
                         ),
@@ -652,14 +936,18 @@ class _AddStickerSheetState extends State<AddStickerSheet> {
 class _PickerOptionCard extends StatelessWidget {
   final IconData icon;
   final String label;
+  final String? subtitle;
   final Color color;
   final VoidCallback onTap;
+  final bool isHorizontal;
 
   const _PickerOptionCard({
     required this.icon,
     required this.label,
+    this.subtitle,
     required this.color,
     required this.onTap,
+    this.isHorizontal = false,
   });
 
   @override
@@ -671,58 +959,95 @@ class _PickerOptionCard extends StatelessWidget {
         borderRadius: BorderRadius.circular(16),
         onTap: onTap,
         child: Padding(
-          padding: const EdgeInsets.symmetric(vertical: 28, horizontal: 16),
-          child: Column(
-            children: [
-              Container(
-                padding: const EdgeInsets.all(14),
-                decoration: BoxDecoration(
-                  color: color,
-                  shape: BoxShape.circle,
+          padding: isHorizontal
+              ? const EdgeInsets.symmetric(vertical: 20, horizontal: 20)
+              : const EdgeInsets.symmetric(vertical: 20, horizontal: 8),
+          child: isHorizontal
+              ? Row(
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.all(14),
+                      decoration: BoxDecoration(
+                        color: color,
+                        shape: BoxShape.circle,
+                      ),
+                      child: Icon(icon, color: Colors.white, size: 28),
+                    ),
+                    const SizedBox(width: 16),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Text(
+                            label,
+                            style: TextStyle(
+                              fontWeight: FontWeight.bold,
+                              fontSize: 15,
+                              color: color,
+                            ),
+                          ),
+                          if (subtitle != null) ...[
+                            const SizedBox(height: 4),
+                            Text(
+                              subtitle!,
+                              style: TextStyle(
+                                fontSize: 12,
+                                color: Colors.grey.shade600,
+                              ),
+                            ),
+                          ],
+                        ],
+                      ),
+                    ),
+                    Icon(
+                      Icons.arrow_forward_ios_rounded,
+                      size: 16,
+                      color: color.withAlpha(150),
+                    ),
+                  ],
+                )
+              : Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: color,
+                        shape: BoxShape.circle,
+                      ),
+                      child: Icon(icon, color: Colors.white, size: 24),
+                    ),
+                    const SizedBox(height: 10),
+                    Text(
+                      label,
+                      textAlign: TextAlign.center,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        fontWeight: FontWeight.bold,
+                        fontSize: 12.5,
+                        color: color,
+                      ),
+                    ),
+                    if (subtitle != null) ...[
+                      const SizedBox(height: 3),
+                      Text(
+                        subtitle!,
+                        textAlign: TextAlign.center,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          fontSize: 10,
+                          color: Colors.grey.shade600,
+                        ),
+                      ),
+                    ],
+                  ],
                 ),
-                child: Icon(icon, color: Colors.white, size: 28),
-              ),
-              const SizedBox(height: 12),
-              Text(
-                label,
-                style: TextStyle(
-                  fontWeight: FontWeight.bold,
-                  fontSize: 15,
-                  color: color,
-                ),
-              ),
-            ],
-          ),
         ),
       ),
     );
   }
 }
 
-/// Custom painter for transparency checkerboard background
-class _CheckerboardPainter extends CustomPainter {
-  @override
-  void paint(Canvas canvas, Size size) {
-    const squareSize = 8.0;
-    final paint1 = Paint()..color = const Color(0xFFF7F7F7);
-    final paint2 = Paint()..color = const Color(0xFFEBEBEB);
-
-    canvas.drawRect(Rect.fromLTWH(0, 0, size.width, size.height), paint1);
-
-    for (double y = 0; y < size.height; y += squareSize) {
-      final isOddRow = ((y / squareSize).floor() % 2) == 1;
-      for (double x = 0; x < size.width; x += squareSize) {
-        final isOddCol = ((x / squareSize).floor() % 2) == 1;
-        if (isOddRow != isOddCol) {
-          canvas.drawRect(
-            Rect.fromLTWH(x, y, squareSize, squareSize),
-            paint2,
-          );
-        }
-      }
-    }
-  }
-
-  @override
-  bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
-}

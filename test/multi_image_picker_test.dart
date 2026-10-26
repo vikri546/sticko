@@ -130,10 +130,35 @@ void main() {
       ));
       await tester.pump();
 
-      // Verify sheet title and options
+      // Verify sheet title and options: exactly 2 buttons for static pack
       expect(find.text('Tambah Stiker Baru'), findsOneWidget);
       expect(find.text('Galeri Foto'), findsOneWidget);
       expect(find.text('Kamera'), findsOneWidget);
+      expect(find.text('Galeri Animasi (GIF / Video)'), findsNothing);
+    });
+
+    testWidgets('AddStickerSheet displays exactly 1 button for animated sticker packs', (WidgetTester tester) async {
+      final manager = StickerPackManager();
+      manager.resetForTesting();
+      await manager.initialize(customStickersDir: tempDir.path, force: true);
+
+      final animPack = await manager.createPack(
+        name: 'Animated UI Pack',
+        animatedStickerPack: true,
+      );
+
+      await tester.pumpWidget(MaterialApp(
+        home: Scaffold(
+          body: AddStickerSheet(packIdentifier: animPack.identifier),
+        ),
+      ));
+      await tester.pump();
+
+      // Verify sheet title and options: exactly 1 button for animated pack
+      expect(find.text('Tambah Stiker Animasi (Maks 10s)'), findsOneWidget);
+      expect(find.text('Galeri Animasi (GIF / Video)'), findsOneWidget);
+      expect(find.text('Galeri Foto'), findsNothing);
+      expect(find.text('Kamera'), findsNothing);
     });
   });
 }

@@ -41,12 +41,6 @@ class StickerGridTile extends StatelessWidget {
       clipBehavior: Clip.antiAlias,
       child: Stack(
         children: [
-          // Checkerboard transparent background
-          Positioned.fill(
-            child: CustomPaint(
-              painter: _CheckerboardPainter(),
-            ),
-          ),
 
           // Sticker Image
           Positioned.fill(
@@ -163,30 +157,3 @@ class StickerGridTile extends StatelessWidget {
   }
 }
 
-/// Custom painter for transparency checkerboard background
-class _CheckerboardPainter extends CustomPainter {
-  @override
-  void paint(Canvas canvas, Size size) {
-    const squareSize = 8.0;
-    final paint1 = Paint()..color = const Color(0xFFF7F7F7);
-    final paint2 = Paint()..color = const Color(0xFFEBEBEB);
-
-    canvas.drawRect(Rect.fromLTWH(0, 0, size.width, size.height), paint1);
-
-    for (double y = 0; y < size.height; y += squareSize) {
-      final isOddRow = ((y / squareSize).floor() % 2) == 1;
-      for (double x = 0; x < size.width; x += squareSize) {
-        final isOddCol = ((x / squareSize).floor() % 2) == 1;
-        if (isOddRow != isOddCol) {
-          canvas.drawRect(
-            Rect.fromLTWH(x, y, squareSize, squareSize),
-            paint2,
-          );
-        }
-      }
-    }
-  }
-
-  @override
-  bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
-}

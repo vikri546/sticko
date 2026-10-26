@@ -132,13 +132,28 @@ class StickerPackManager extends ChangeNotifier {
       throw Exception('Paket stiker sudah mencapai batas maksimal 30 stiker.');
     }
 
+    final isAnimated = StickerImageProcessor.isAnimatedMedia(imageBytes);
+    bool shouldBeAnimated = currentPack.animatedStickerPack;
+
+    if (isAnimated && currentPack.stickers.isEmpty) {
+      shouldBeAnimated = true;
+    } else if (isAnimated && !currentPack.animatedStickerPack) {
+      throw Exception(
+        'WhatsApp tidak mengizinkan mencampur stiker statis dan animasi dalam satu paket. Silakan gunakan atau buat Paket Animasi.',
+      );
+    } else if (!isAnimated && currentPack.animatedStickerPack) {
+      throw Exception(
+        'Paket ini adalah Paket Animasi. Stiker yang ditambahkan harus berupa animasi (GIF atau Video).',
+      );
+    }
+
     final dirPath = _stickersDirectory ??
         await WhatsAppStickersService.getStickersDirectory();
     final packDirPath = '$dirPath/$packIdentifier';
     final timestamp = DateTime.now().millisecondsSinceEpoch;
     final fileName = 'sticker_$timestamp.webp';
 
-    final maxBytes = currentPack.animatedStickerPack
+    final maxBytes = shouldBeAnimated
         ? WhatsAppStickerValidator.maxAnimatedStickerFileSizeBytes
         : WhatsAppStickerValidator.maxStickerFileSizeBytes;
 
@@ -167,6 +182,74 @@ class StickerPackManager extends ChangeNotifier {
 
     final newSticker = StickerItem(imageFileName: fileName, emojis: emojis);
     final updatedPack = currentPack.copyWith(
+      animatedStickerPack: shouldBeAnimated,
+      imageDataVersion: newVersion,
+      stickers: [...currentPack.stickers, newSticker],
+    );
+
+    _packs[packIndex] = updatedPack;
+    await _savePacks();
+    notifyListeners();
+    return newSticker;
+  }
+
+  /// Add an animated sticker directly from a video file path (up to 10s, <= 500 KB).
+  Future<StickerItem> addVideoStickerToPack({
+    required String packIdentifier,
+    required String videoPath,
+    List<String> emojis = const ['😀'],
+    int maxDurationMs = 10000,
+  }) async {
+    final packIndex = _packs.indexWhere((p) => p.identifier == packIdentifier);
+    if (packIndex == -1) {
+      throw Exception('Paket stiker dengan ID $packIdentifier tidak ditemukan.');
+    }
+
+    final currentPack = _packs[packIndex];
+    if (currentPack.stickers.length >= 30) {
+      throw Exception('Paket stiker sudah mencapai batas maksimal 30 stiker.');
+    }
+
+    bool shouldBeAnimated = currentPack.animatedStickerPack;
+    if (currentPack.stickers.isEmpty) {
+      shouldBeAnimated = true;
+    } else if (!currentPack.animatedStickerPack) {
+      throw Exception(
+        'WhatsApp tidak mengizinkan mencampur stiker statis dan stiker animasi dalam satu paket. Silakan gunakan atau buat Paket Animasi.',
+      );
+    }
+
+    final dirPath = _stickersDirectory ??
+        await WhatsAppStickersService.getStickersDirectory();
+    final packDirPath = '$dirPath/$packIdentifier';
+    final timestamp = DateTime.now().millisecondsSinceEpoch;
+    final fileName = 'sticker_$timestamp.webp';
+
+    final processed = await StickerImageProcessor.processVideoToStickerWebp(
+      videoPath: videoPath,
+      maxDurationMs: maxDurationMs,
+      maxBytes: WhatsAppStickerValidator.maxAnimatedStickerFileSizeBytes,
+    );
+
+    await StickerImageProcessor.saveStickerFile(
+      packDirectoryPath: packDirPath,
+      fileName: fileName,
+      bytes: processed.webpBytes,
+    );
+
+    final trayFile = File('$packDirPath/tray.png');
+    if (!trayFile.existsSync()) {
+      final trayBytes =
+          await StickerImageProcessor.generateTrayIcon(processed.webpBytes);
+      trayFile.writeAsBytesSync(trayBytes);
+    }
+
+    final currentVersion = int.tryParse(currentPack.imageDataVersion) ?? 1;
+    final newVersion = (currentVersion + 1).toString();
+
+    final newSticker = StickerItem(imageFileName: fileName, emojis: emojis);
+    final updatedPack = currentPack.copyWith(
+      animatedStickerPack: shouldBeAnimated,
       imageDataVersion: newVersion,
       stickers: [...currentPack.stickers, newSticker],
     );

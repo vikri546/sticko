@@ -2,6 +2,7 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:image/image.dart' as img;
 import 'package:image_picker/image_picker.dart';
+import 'package:sticker_flutter/services/whatsapp_stickers_service.dart';
 
 /// Data class holding processed sticker details.
 class ProcessedStickerResult {
@@ -84,15 +85,180 @@ class StickerImageProcessor {
     }
   }
 
-  /// Process raw image bytes into compliant 512x512 WebP with transparent margins.
+  /// Pick a video from gallery for animated sticker creation (up to 10 seconds).
+  static Future<XFile?> pickVideo({
+    ImageSource source = ImageSource.gallery,
+    Duration maxDuration = const Duration(seconds: 10),
+  }) async {
+    try {
+      return await _picker.pickVideo(
+        source: source,
+        maxDuration: maxDuration,
+      );
+    } catch (e) {
+      debugPrint('Error picking video: $e');
+      return null;
+    }
+  }
+
+  /// Pick animated media (both Videos and GIFs) from device gallery.
+  /// Unlike pickVideo which filters only video/*, pickMedia allows both Videos and GIFs to appear.
+  static Future<XFile?> pickAnimatedMedia() async {
+    try {
+      return await _picker.pickMedia(
+        maxWidth: 2048,
+        maxHeight: 2048,
+        imageQuality: 95,
+      );
+    } catch (e) {
+      debugPrint('Error picking animated media: $e');
+      return null;
+    }
+  }
+
+  /// Pick multiple animated media (both Videos and GIFs) from gallery.
+  static Future<List<XFile>> pickMultipleAnimatedMedia({int? limit}) async {
+    try {
+      final files = await _picker.pickMultipleMedia(
+        maxWidth: 2048,
+        maxHeight: 2048,
+        imageQuality: 95,
+        limit: limit,
+      );
+      if (limit != null && files.length > limit) {
+        return files.take(limit).toList();
+      }
+      return files;
+    } catch (e) {
+      try {
+        final files = await _picker.pickMultipleMedia(
+          maxWidth: 2048,
+          maxHeight: 2048,
+          imageQuality: 95,
+        );
+        if (limit != null && files.length > limit) {
+          return files.take(limit).toList();
+        }
+        return files;
+      } catch (e2) {
+        debugPrint('Error picking multiple animated media: $e2');
+        return [];
+      }
+    }
+  }
+
+  /// Check if file path corresponds to a video format
+  static bool isVideoFile(String path) {
+    final lower = path.toLowerCase();
+    return lower.endsWith('.mp4') ||
+        lower.endsWith('.mov') ||
+        lower.endsWith('.mkv') ||
+        lower.endsWith('.webm') ||
+        lower.endsWith('.3gp') ||
+        lower.endsWith('.avi') ||
+        lower.endsWith('.m4v');
+  }
+
+  /// Check if byte array starts with GIF magic header (GIF87a / GIF89a)
+  static bool isAnimatedGif(Uint8List bytes) {
+    if (bytes.length < 6) return false;
+    return bytes[0] == 0x47 &&
+        bytes[1] == 0x49 &&
+        bytes[2] == 0x46 &&
+        bytes[3] == 0x38 &&
+        (bytes[4] == 0x37 || bytes[4] == 0x39) &&
+        bytes[5] == 0x61;
+  }
+
+  /// Check if byte array is an animated WebP (contains ANIM chunk)
+  static bool isAnimatedWebp(Uint8List bytes) {
+    if (bytes.length < 32) return false;
+    final isWebpHeader = bytes[0] == 0x52 &&
+        bytes[1] == 0x49 &&
+        bytes[2] == 0x46 &&
+        bytes[3] == 0x46 &&
+        bytes[8] == 0x57 &&
+        bytes[9] == 0x45 &&
+        bytes[10] == 0x42 &&
+        bytes[11] == 0x50;
+    if (!isWebpHeader) return false;
+
+    final limit = bytes.length - 4;
+    for (int i = 12; i < limit; i++) {
+      if (bytes[i] == 0x41 &&
+          bytes[i + 1] == 0x4E &&
+          bytes[i + 2] == 0x49 &&
+          bytes[i + 3] == 0x4D) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /// Check if raw bytes belong to an animated media format
+  static bool isAnimatedMedia(Uint8List bytes) {
+    return isAnimatedGif(bytes) || isAnimatedWebp(bytes);
+  }
+
+  /// Process raw image/animation bytes into compliant 512x512 WebP with transparent margins.
+  /// Automatically detects animated GIF / WebP and preserves animation up to 10 seconds.
   /// Runs in background compute isolate to keep UI smooth and responsive.
-  /// [maxBytes] defaults to 100 KB for static stickers or 500 KB for animated sticker packs.
   static Future<ProcessedStickerResult> processToStickerWebp(
     Uint8List sourceBytes, {
     int maxBytes = maxFileSizeBytes,
   }) async {
+    if (isAnimatedMedia(sourceBytes)) {
+      return await processAnimatedToStickerWebp(
+        bytes: sourceBytes,
+        maxBytes: maxBytes > maxFileSizeBytes ? maxBytes : maxAnimatedFileSizeBytes,
+      );
+    }
     return await compute(_isolateProcessSticker, {
       'bytes': sourceBytes,
+      'maxBytes': maxBytes,
+    });
+  }
+
+  /// Convert a video file to an animated WebP sticker (up to 10s, <= 500 KB).
+  static Future<ProcessedStickerResult> processVideoToStickerWebp({
+    required String videoPath,
+    int maxDurationMs = 10000,
+    int maxBytes = maxAnimatedFileSizeBytes,
+  }) async {
+    final extracted = await WhatsAppStickersService.extractVideoFrames(
+      videoPath: videoPath,
+      maxDurationMs: maxDurationMs,
+    );
+
+    if (extracted == null || (extracted['frames'] as List).isEmpty) {
+      throw Exception('Gagal mengekstrak frame dari video untuk dijadikan stiker animasi.');
+    }
+
+    final frames = extracted['frames'] as List<Uint8List>;
+    final frameDurationMs = extracted['frameDurationMs'] as int;
+
+    return await processAnimatedToStickerWebp(
+      frames: frames,
+      frameDurationMs: frameDurationMs,
+      maxDurationMs: maxDurationMs,
+      maxBytes: maxBytes,
+    );
+  }
+
+  /// Process animated media (GIF bytes, animated WebP bytes, or extracted video frames)
+  /// into compliant animated WebP (512x512, <= 500KB, <= 10s, infinite loop).
+  static Future<ProcessedStickerResult> processAnimatedToStickerWebp({
+    Uint8List? bytes,
+    List<Uint8List>? frames,
+    int? frameDurationMs,
+    int maxDurationMs = 10000,
+    int maxBytes = maxAnimatedFileSizeBytes,
+  }) async {
+    return await compute(_isolateProcessAnimatedSticker, {
+      'bytes': bytes,
+      'frames': frames,
+      'frameDurationMs': frameDurationMs,
+      'maxDurationMs': maxDurationMs,
       'maxBytes': maxBytes,
     });
   }
@@ -198,6 +364,197 @@ class StickerImageProcessor {
     final quantFallback = _quantizePreservingAlpha(smoothCanvas, 16);
     webpBytes = Uint8List.fromList(img.encodeWebP(quantFallback));
 
+    return ProcessedStickerResult(
+      webpBytes: webpBytes,
+      width: stickerDimension,
+      height: stickerDimension,
+      byteSize: webpBytes.lengthInBytes,
+    );
+  }
+
+  /// Background isolate processor function for animated stickers (GIF, WebP, Video frames).
+  /// Enforces WhatsApp constraints:
+  /// - Maximum duration: 10 seconds (10,000 ms)
+  /// - Dimensions: 512x512 with 16px transparent margins (480 inner box)
+  /// - File size: <= 500 KB (500 * 1024 bytes)
+  /// - Looping: Infinite loop (loopCount = 0)
+  static ProcessedStickerResult _isolateProcessAnimatedSticker(dynamic input) {
+    final map = input as Map<String, dynamic>;
+    final bytes = map['bytes'] as Uint8List?;
+    final rawFrames = (map['frames'] as List<dynamic>?)?.map((e) => e as Uint8List).toList();
+    final defaultFrameDuration = (map['frameDurationMs'] as int?) ?? 100;
+    final maxDurationMs = (map['maxDurationMs'] as int?) ?? 10000;
+    final maxBytes = (map['maxBytes'] as int?) ?? maxAnimatedFileSizeBytes;
+
+    List<img.Image> frameImages = [];
+    List<int> frameDurations = [];
+
+    if (bytes != null) {
+      img.Image? decodedAnim;
+      if (isAnimatedGif(bytes)) {
+        decodedAnim = img.decodeGif(bytes);
+      } else if (isAnimatedWebp(bytes)) {
+        decodedAnim = img.decodeWebP(bytes);
+      } else {
+        decodedAnim = img.decodeImage(bytes);
+      }
+
+      if (decodedAnim == null) {
+        throw Exception('Format animasi tidak dapat dibaca oleh sistem.');
+      }
+
+      if (decodedAnim.numFrames <= 1) {
+        return _isolateProcessSticker({
+          'bytes': bytes,
+          'maxBytes': maxBytes,
+        });
+      }
+
+      // Calculate total duration and trim to max 10,000 ms (10 seconds)
+      int accumulatedDuration = 0;
+      final sourceFrames = <img.Image>[];
+      final sourceDurations = <int>[];
+
+      for (int i = 0; i < decodedAnim.numFrames; i++) {
+        final f = decodedAnim.frames[i];
+        final dur = f.frameDuration > 10 ? f.frameDuration : 100;
+        if (accumulatedDuration + dur > maxDurationMs && sourceFrames.isNotEmpty) {
+          break; // Hard cap at 10 seconds
+        }
+        accumulatedDuration += dur;
+        sourceFrames.add(f);
+        sourceDurations.add(dur);
+      }
+
+      if (sourceFrames.isEmpty) {
+        sourceFrames.add(decodedAnim.frames[0]);
+        sourceDurations.add(100);
+      }
+
+      // If frame count is very large (> 32), downsample to keep file size under 500 KB
+      if (sourceFrames.length > 32) {
+        final step = (sourceFrames.length / 28).ceil();
+        for (int i = 0; i < sourceFrames.length; i += step) {
+          frameImages.add(sourceFrames[i]);
+          int combinedDur = 0;
+          for (int j = i; j < i + step && j < sourceDurations.length; j++) {
+            combinedDur += sourceDurations[j];
+          }
+          frameDurations.add(combinedDur > 0 ? combinedDur : 100);
+        }
+      } else {
+        frameImages = sourceFrames;
+        frameDurations = sourceDurations;
+      }
+    } else if (rawFrames != null && rawFrames.isNotEmpty) {
+      for (final fBytes in rawFrames) {
+        final decoded = img.decodeImage(fBytes);
+        if (decoded != null) {
+          frameImages.add(decoded);
+          frameDurations.add(defaultFrameDuration);
+        }
+      }
+      if (frameImages.isEmpty) {
+        throw Exception('Gagal membaca frame video untuk stiker animasi.');
+      }
+    } else {
+      throw Exception('Data animasi tidak valid.');
+    }
+
+    img.Image buildAnimationSequence(List<img.Image> frames, List<int> durations, int innerSize) {
+      final animation = img.Image(
+        width: stickerDimension,
+        height: stickerDimension,
+        numChannels: 4,
+      );
+      animation.loopCount = 0; // Infinite loop required by WhatsApp
+
+      for (int i = 0; i < frames.length; i++) {
+        final src = frames[i];
+        final targetFrame = i == 0
+            ? animation
+            : animation.addFrame(img.Image(
+                width: stickerDimension,
+                height: stickerDimension,
+                numChannels: 4,
+              ));
+        targetFrame.frameDuration = durations[i].clamp(20, 1000);
+
+        int targetWidth;
+        int targetHeight;
+        if (src.width >= src.height) {
+          targetWidth = innerSize;
+          targetHeight = (src.height * innerSize / src.width).round();
+        } else {
+          targetHeight = innerSize;
+          targetWidth = (src.width * innerSize / src.height).round();
+        }
+        if (targetWidth <= 0) targetWidth = 1;
+        if (targetHeight <= 0) targetHeight = 1;
+
+        final resized = img.copyResize(
+          src,
+          width: targetWidth,
+          height: targetHeight,
+          interpolation: img.Interpolation.linear,
+        );
+
+        final dstX = (stickerDimension - resized.width) ~/ 2;
+        final dstY = (stickerDimension - resized.height) ~/ 2;
+        img.compositeImage(targetFrame, resized, dstX: dstX, dstY: dstY);
+      }
+      return animation;
+    }
+
+    // Step 1: Standard high-quality 480px box on 512x512 canvas
+    img.Image animation = buildAnimationSequence(frameImages, frameDurations, targetInnerBox);
+
+    // Progressive lossy quality compression
+    for (final quality in [80, 65, 50, 40, 30]) {
+      final webpBytes = Uint8List.fromList(
+        img.encodeWebP(animation, singleFrame: false, quality: quality),
+      );
+      if (webpBytes.lengthInBytes <= maxBytes) {
+        return ProcessedStickerResult(
+          webpBytes: webpBytes,
+          width: stickerDimension,
+          height: stickerDimension,
+          byteSize: webpBytes.lengthInBytes,
+        );
+      }
+    }
+
+    // Step 2: Downsample frames if still > 500 KB (halving frame count)
+    if (frameImages.length > 8) {
+      final reducedFrames = <img.Image>[];
+      final reducedDurations = <int>[];
+      for (int i = 0; i < frameImages.length; i += 2) {
+        reducedFrames.add(frameImages[i]);
+        final d1 = frameDurations[i];
+        final d2 = (i + 1 < frameDurations.length) ? frameDurations[i + 1] : 0;
+        reducedDurations.add(d1 + d2);
+      }
+
+      final smallerAnim = buildAnimationSequence(reducedFrames, reducedDurations, 440);
+      for (final quality in [60, 45, 30, 20]) {
+        final webpBytes = Uint8List.fromList(
+          img.encodeWebP(smallerAnim, singleFrame: false, quality: quality),
+        );
+        if (webpBytes.lengthInBytes <= maxBytes) {
+          return ProcessedStickerResult(
+            webpBytes: webpBytes,
+            width: stickerDimension,
+            height: stickerDimension,
+            byteSize: webpBytes.lengthInBytes,
+          );
+        }
+      }
+    }
+
+    // Fallback: aggressive compression under limit
+    final webpBytes = Uint8List.fromList(
+      img.encodeWebP(animation, singleFrame: false, quality: 20),
+    );
     return ProcessedStickerResult(
       webpBytes: webpBytes,
       width: stickerDimension,

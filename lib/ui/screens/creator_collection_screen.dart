@@ -216,21 +216,22 @@ class _CreatorCollectionScreenState extends State<CreatorCollectionScreen>
                           );
                           final file = filePath != null ? File(filePath) : null;
 
-                          return Container(
-                            decoration: BoxDecoration(
-                              color: isDark ? const Color(0x1AFFFFFF) : const Color(0x0A000000),
-                              borderRadius: BorderRadius.circular(12),
-                              border: Border.all(
-                                color: isDark ? const Color(0x22FFFFFF) : const Color(0x1F000000),
-                              ),
-                            ),
-                            child: ClipRRect(
-                              borderRadius: BorderRadius.circular(12),
+                          return Material(
+                            color: Colors.transparent,
+                            child: InkWell(
+                              borderRadius: BorderRadius.circular(8),
+                              onTap: () {
+                                _showStickerPreviewModal(
+                                  sticker: sticker,
+                                  pack: pack,
+                                  filePath: filePath,
+                                );
+                              },
                               child: Stack(
                                 children: [
                                   Center(
                                     child: Padding(
-                                      padding: const EdgeInsets.all(6),
+                                      padding: const EdgeInsets.all(4),
                                       child: file != null && file.existsSync()
                                           ? Image.file(
                                               file,
@@ -337,35 +338,25 @@ class _CreatorCollectionScreenState extends State<CreatorCollectionScreen>
                 ),
               ),
               const SizedBox(height: 18),
-              Container(
+              SizedBox(
                 width: 140,
                 height: 140,
-                decoration: BoxDecoration(
-                  color: isDark ? const Color(0x22FFFFFF) : const Color(0x0A000000),
-                  borderRadius: BorderRadius.circular(18),
-                  border: Border.all(
-                    color: isDark ? const Color(0x33FFFFFF) : const Color(0x1F000000),
-                  ),
-                ),
                 child: Center(
-                  child: Padding(
-                    padding: const EdgeInsets.all(12),
-                    child: file != null && file.existsSync()
-                        ? Image.file(
-                            file,
-                            fit: BoxFit.contain,
-                            errorBuilder: (_, _, _) => const Icon(
-                              Icons.broken_image_rounded,
-                              color: Colors.grey,
-                              size: 40,
-                            ),
-                          )
-                        : const Icon(
-                            Icons.image_outlined,
+                  child: file != null && file.existsSync()
+                      ? Image.file(
+                          file,
+                          fit: BoxFit.contain,
+                          errorBuilder: (_, _, _) => const Icon(
+                            Icons.broken_image_rounded,
                             color: Colors.grey,
                             size: 40,
                           ),
-                  ),
+                        )
+                      : const Icon(
+                          Icons.image_outlined,
+                          color: Colors.grey,
+                          size: 40,
+                        ),
                 ),
               ),
               const SizedBox(height: 14),

@@ -133,6 +133,16 @@ class WhatsAppStickerValidator {
           errors.add(
             'Dimensi stiker #${i + 1} harus tepat 512x512 piksel (ditemukan: ${image.width}x${image.height}).',
           );
+        } else if (pack.animatedStickerPack) {
+          int totalDurationMs = 0;
+          for (final f in image.frames) {
+            totalDurationMs += f.frameDuration;
+          }
+          if (totalDurationMs > 10000) {
+            errors.add(
+              'Durasi animasi stiker #${i + 1} (${(totalDurationMs / 1000).toStringAsFixed(1)}s) melebihi batas maksimal WhatsApp 10 detik.',
+            );
+          }
         }
       } catch (e) {
         errors.add('Gagal memeriksa stiker #${i + 1}: $e');

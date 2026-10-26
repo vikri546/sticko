@@ -336,4 +336,33 @@ class WhatsAppStickersService {
       return [];
     }
   }
+
+  /// Extract video frames natively for animated WhatsApp sticker creation.
+  /// Caps duration at [maxDurationMs] (default 10,000ms = 10 seconds).
+  static Future<Map<String, dynamic>?> extractVideoFrames({
+    required String videoPath,
+    int maxDurationMs = 10000,
+  }) async {
+    try {
+      final res = await _channel.invokeMethod<Map<dynamic, dynamic>>(
+        'extractVideoFrames',
+        {
+          'videoPath': videoPath,
+          'maxDurationMs': maxDurationMs,
+        },
+      );
+      if (res == null) return null;
+      final rawFrames = res['frames'] as List<dynamic>? ?? [];
+      final frames = rawFrames.map((f) => f as Uint8List).toList();
+      final frameDurationMs = (res['frameDurationMs'] as num?)?.toInt() ?? 100;
+      final totalDurationMs = (res['totalDurationMs'] as num?)?.toInt() ?? 0;
+      return {
+        'frames': frames,
+        'frameDurationMs': frameDurationMs,
+        'totalDurationMs': totalDurationMs,
+      };
+    } catch (_) {
+      return null;
+    }
+  }
 }
