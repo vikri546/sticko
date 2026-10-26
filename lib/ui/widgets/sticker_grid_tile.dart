@@ -18,6 +18,9 @@ class StickerGridTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final file = filePath != null ? File(filePath!) : null;
+    final fileExists = file != null && file.existsSync();
+    final fileBytes = fileExists ? file.lengthSync() : 0;
+    final fileKb = (fileBytes / 1024).toStringAsFixed(0);
 
     return Container(
       decoration: BoxDecoration(
@@ -49,7 +52,7 @@ class StickerGridTile extends StatelessWidget {
           Positioned.fill(
             child: Padding(
               padding: const EdgeInsets.all(10.0),
-              child: file != null && file.existsSync()
+              child: fileExists
                   ? Image.file(
                       file,
                       fit: BoxFit.contain,
@@ -63,6 +66,30 @@ class StickerGridTile extends StatelessWidget {
                     ),
             ),
           ),
+
+          // Size Badge (top left)
+          if (fileExists)
+            Positioned(
+              top: 5,
+              left: 5,
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
+                decoration: BoxDecoration(
+                  color: fileBytes > (100 * 1024)
+                      ? Colors.orange.shade900.withAlpha(220)
+                      : Colors.black.withAlpha(130),
+                  borderRadius: BorderRadius.circular(6),
+                ),
+                child: Text(
+                  '$fileKb KB',
+                  style: const TextStyle(
+                    fontSize: 9.5,
+                    fontWeight: FontWeight.bold,
+                    color: Colors.white,
+                  ),
+                ),
+              ),
+            ),
 
           // Delete Button (top right)
           Positioned(

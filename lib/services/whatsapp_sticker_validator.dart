@@ -19,7 +19,8 @@ class ValidationResult {
 class WhatsAppStickerValidator {
   static const int minStickersPerPack = 3;
   static const int maxStickersPerPack = 30;
-  static const int maxStickerFileSizeBytes = 100 * 1024; // 100 KB
+  static const int maxStickerFileSizeBytes = 100 * 1024; // 100 KB limit for static stickers
+  static const int maxAnimatedStickerFileSizeBytes = 500 * 1024; // 500 KB limit for animated stickers
   static const int maxTrayFileSizeBytes = 50 * 1024; // 50 KB
   static const int stickerDimension = 512;
   static const int trayDimension = 96;
@@ -103,10 +104,15 @@ class WhatsAppStickerValidator {
         continue;
       }
 
+      final maxAllowedSize = pack.animatedStickerPack
+          ? maxAnimatedStickerFileSizeBytes
+          : maxStickerFileSizeBytes;
+      final maxAllowedKb = pack.animatedStickerPack ? 500 : 100;
+
       final fileLength = stickerFile.lengthSync();
-      if (fileLength > maxStickerFileSizeBytes) {
+      if (fileLength > maxAllowedSize) {
         errors.add(
-          'Stiker #${i + 1} (${(fileLength / 1024).toStringAsFixed(1)} KB) melebihi batas maksimal WhatsApp 100 KB.',
+          'Stiker #${i + 1} (${(fileLength / 1024).toStringAsFixed(1)} KB) melebihi batas maksimal WhatsApp $maxAllowedKb KB.',
         );
       }
 

@@ -88,6 +88,7 @@ class StickerPackManager extends ChangeNotifier {
   Future<StickerPack> createPack({
     required String name,
     String publisher = 'Sticker Maker',
+    bool animatedStickerPack = false,
   }) async {
     final timestamp = DateTime.now().millisecondsSinceEpoch;
     final identifier = 'pack_$timestamp';
@@ -105,6 +106,7 @@ class StickerPackManager extends ChangeNotifier {
       publisher: publisher.trim().isEmpty ? 'Sticker Maker' : publisher.trim(),
       trayImageFile: 'tray.png',
       imageDataVersion: '1',
+      animatedStickerPack: animatedStickerPack,
       stickers: const [],
     );
 
@@ -136,9 +138,15 @@ class StickerPackManager extends ChangeNotifier {
     final timestamp = DateTime.now().millisecondsSinceEpoch;
     final fileName = 'sticker_$timestamp.webp';
 
-    // 1. Process image to compliant 512x512 WebP (< 100 KB)
-    final processed =
-        await StickerImageProcessor.processToStickerWebp(imageBytes);
+    final maxBytes = currentPack.animatedStickerPack
+        ? WhatsAppStickerValidator.maxAnimatedStickerFileSizeBytes
+        : WhatsAppStickerValidator.maxStickerFileSizeBytes;
+
+    // 1. Process image to compliant 512x512 WebP (guaranteed <= maxBytes)
+    final processed = await StickerImageProcessor.processToStickerWebp(
+      imageBytes,
+      maxBytes: maxBytes,
+    );
     await StickerImageProcessor.saveStickerFile(
       packDirectoryPath: packDirPath,
       fileName: fileName,
@@ -167,6 +175,82 @@ class StickerPackManager extends ChangeNotifier {
     await _savePacks();
     notifyListeners();
     return newSticker;
+  }
+
+  /// Add multiple stickers in batch from raw image bytes into an existing pack.
+  /// Automatically processes each to compliant 512x512 WebP (< 100 KB or < 500 KB for animated).
+  /// Reports progress via optional [onProgress] callback.
+  Future<List<StickerItem>> addMultipleStickersToPack({
+    required String packIdentifier,
+    required List<Uint8List> imagesBytesList,
+    List<String> defaultEmojis = const ['😀'],
+    void Function(int current, int total)? onProgress,
+  }) async {
+    final packIndex = _packs.indexWhere((p) => p.identifier == packIdentifier);
+    if (packIndex == -1) {
+      throw Exception('Paket stiker dengan ID $packIdentifier tidak ditemukan.');
+    }
+
+    final currentPack = _packs[packIndex];
+    final remainingSlots = 30 - currentPack.stickers.length;
+    if (remainingSlots <= 0) {
+      throw Exception('Paket stiker sudah mencapai batas maksimal 30 stiker.');
+    }
+
+    final toAddBytes = imagesBytesList.take(remainingSlots).toList();
+    final dirPath = _stickersDirectory ??
+        await WhatsAppStickersService.getStickersDirectory();
+    final packDirPath = '$dirPath/$packIdentifier';
+    final maxBytes = currentPack.animatedStickerPack
+        ? WhatsAppStickerValidator.maxAnimatedStickerFileSizeBytes
+        : WhatsAppStickerValidator.maxStickerFileSizeBytes;
+
+    final newStickers = <StickerItem>[];
+    final total = toAddBytes.length;
+
+    for (int i = 0; i < total; i++) {
+      onProgress?.call(i + 1, total);
+      final imageBytes = toAddBytes[i];
+      final timestamp = DateTime.now().millisecondsSinceEpoch + i;
+      final fileName = 'sticker_$timestamp.webp';
+
+      // 1. Process image to compliant 512x512 WebP (guaranteed <= maxBytes)
+      final processed = await StickerImageProcessor.processToStickerWebp(
+        imageBytes,
+        maxBytes: maxBytes,
+      );
+      await StickerImageProcessor.saveStickerFile(
+        packDirectoryPath: packDirPath,
+        fileName: fileName,
+        bytes: processed.webpBytes,
+      );
+
+      // 2. Generate tray icon from this sticker if it doesn't exist yet
+      final trayFile = File('$packDirPath/tray.png');
+      if (!trayFile.existsSync()) {
+        final trayBytes =
+            await StickerImageProcessor.generateTrayIcon(imageBytes);
+        trayFile.writeAsBytesSync(trayBytes);
+      }
+
+      newStickers.add(StickerItem(
+        imageFileName: fileName,
+        emojis: defaultEmojis.isNotEmpty ? defaultEmojis : ['😀'],
+      ));
+    }
+
+    final currentVersion = int.tryParse(currentPack.imageDataVersion) ?? 1;
+    final newVersion = (currentVersion + 1).toString();
+
+    final updatedPack = currentPack.copyWith(
+      imageDataVersion: newVersion,
+      stickers: [...currentPack.stickers, ...newStickers],
+    );
+
+    _packs[packIndex] = updatedPack;
+    await _savePacks();
+    notifyListeners();
+    return newStickers;
   }
 
   /// Remove a sticker from a pack and delete its file.
@@ -216,7 +300,67 @@ class StickerPackManager extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// Automatically inspect and compress any oversized stickers or tray icon in a pack.
+  /// Guarantees that all stickers comply with WhatsApp file size limits (< 100 KB for static, < 500 KB for animated).
+  /// Returns the number of stickers/tray icons that were optimized.
+  Future<int> autoOptimizePackStickers(String packIdentifier) async {
+    final pack = getPack(packIdentifier);
+    if (pack == null) return 0;
+
+    final dirPath = _stickersDirectory ??
+        await WhatsAppStickersService.getStickersDirectory();
+    final packDir = '$dirPath/$packIdentifier';
+    final maxBytes = pack.animatedStickerPack
+        ? WhatsAppStickerValidator.maxAnimatedStickerFileSizeBytes
+        : WhatsAppStickerValidator.maxStickerFileSizeBytes;
+
+    int optimizedCount = 0;
+
+    // 1. Check and optimize tray icon if oversized (> 50 KB)
+    final trayFile = File('$packDir/${pack.trayImageFile}');
+    if (trayFile.existsSync() &&
+        trayFile.lengthSync() > WhatsAppStickerValidator.maxTrayFileSizeBytes) {
+      try {
+        final trayBytes = trayFile.readAsBytesSync();
+        final newTray = await StickerImageProcessor.generateTrayIcon(trayBytes);
+        trayFile.writeAsBytesSync(newTray);
+        optimizedCount++;
+      } catch (e) {
+        debugPrint('Failed to optimize tray icon: $e');
+      }
+    }
+
+    // 2. Check and optimize each sticker if exceeding WhatsApp limits
+    for (final sticker in pack.stickers) {
+      final stickerFile = File('$packDir/${sticker.imageFileName}');
+      if (stickerFile.existsSync() && stickerFile.lengthSync() > maxBytes) {
+        final success = await StickerImageProcessor.optimizeStickerFile(
+          file: stickerFile,
+          maxBytes: maxBytes,
+        );
+        if (success) {
+          optimizedCount++;
+        }
+      }
+    }
+
+    if (optimizedCount > 0) {
+      final currentVersion = int.tryParse(pack.imageDataVersion) ?? 1;
+      final packIndex = _packs.indexWhere((p) => p.identifier == packIdentifier);
+      if (packIndex != -1) {
+        _packs[packIndex] = pack.copyWith(
+          imageDataVersion: (currentVersion + 1).toString(),
+        );
+        await _savePacks();
+        notifyListeners();
+      }
+    }
+
+    return optimizedCount;
+  }
+
   /// Send or update the pack in WhatsApp.
+  /// Automatically optimizes oversized stickers to ensure compliance with WhatsApp limits.
   Future<Map<String, dynamic>> sendPackToWhatsApp(
     String packIdentifier, {
     bool isBusiness = false,
@@ -237,9 +381,14 @@ class StickerPackManager extends ChangeNotifier {
     final dirPath = _stickersDirectory ??
         await WhatsAppStickersService.getStickersDirectory();
 
-    // Pre-flight validation against official WhatsApp rules
+    // 1. Auto-optimize any oversized stickers or tray icon before sending
+    await autoOptimizePackStickers(pack.identifier);
+
+    final refreshedPack = getPack(packIdentifier) ?? pack;
+
+    // 2. Pre-flight validation against official WhatsApp rules
     final validation = await WhatsAppStickerValidator.validatePack(
-      pack,
+      refreshedPack,
       stickersDirectoryPath: dirPath,
     );
     if (!validation.isValid) {
@@ -250,13 +399,13 @@ class StickerPackManager extends ChangeNotifier {
     }
 
     final result = await WhatsAppStickersService.addStickerPack(
-      identifier: pack.identifier,
-      name: pack.name,
+      identifier: refreshedPack.identifier,
+      name: refreshedPack.name,
       isBusiness: isBusiness,
     );
 
     if (result['status'] == 'success') {
-      _installedStatus[pack.identifier] = true;
+      _installedStatus[refreshedPack.identifier] = true;
       notifyListeners();
     }
 

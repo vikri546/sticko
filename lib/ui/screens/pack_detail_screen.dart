@@ -106,6 +106,37 @@ class _PackDetailScreenState extends State<PackDetailScreen> {
     }
   }
 
+  Future<void> _manualOptimizePack(StickerPack pack) async {
+    setState(() => _isExporting = true);
+    try {
+      final count = await _manager.autoOptimizePackStickers(pack.identifier);
+      if (!mounted) return;
+      if (count > 0) {
+        AppNotification.show(
+          context,
+          message: '$count stiker berhasil dioptimalkan sesuai standar WhatsApp (< 100 KB)!',
+          isSuccess: true,
+        );
+      } else {
+        AppNotification.show(
+          context,
+          message: 'Semua stiker sudah optimal (< 100 KB) dan siap untuk WhatsApp.',
+          isSuccess: true,
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        AppNotification.show(
+          context,
+          message: 'Gagal mengoptimalkan stiker: $e',
+          isSuccess: false,
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _isExporting = false);
+    }
+  }
+
   void _confirmDeletePack(StickerPack pack) {
     showDialog(
       context: context,
@@ -160,15 +191,24 @@ class _PackDetailScreenState extends State<PackDetailScreen> {
               children: [
                 Text(
                   pack.name,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
                   style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 17),
                 ),
                 Text(
                   'Oleh ${pack.publisher}',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
                   style: const TextStyle(fontSize: 12, color: Colors.grey),
                 ),
               ],
             ),
             actions: [
+              IconButton(
+                icon: const Icon(Icons.auto_fix_high_rounded, color: Color(0xFF25D366)),
+                tooltip: 'Optimalkan Ukuran Stiker',
+                onPressed: () => _manualOptimizePack(pack),
+              ),
               IconButton(
                 icon: const Icon(Icons.delete_outline_rounded, color: Colors.redAccent),
                 tooltip: 'Hapus Paket',
@@ -225,6 +265,7 @@ class _PackDetailScreenState extends State<PackDetailScreen> {
   }
 
   Widget _buildProgressHeader(StickerPack pack, bool isInstalled) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
     final total = pack.stickers.length;
     final progress = (total / 30.0).clamp(0.0, 1.0);
 
@@ -268,27 +309,51 @@ class _PackDetailScreenState extends State<PackDetailScreen> {
             children: [
               Icon(iconData, color: iconColor, size: 20),
               const SizedBox(width: 8),
-              Text(
-                'Koleksi: $total / 30 Stiker',
-                style: TextStyle(
-                  fontWeight: FontWeight.bold,
-                  fontSize: 14,
-                  color: iconColor,
+              Expanded(
+                child: Text(
+                  'Koleksi: $total / 30 Stiker',
+                  style: TextStyle(
+                    fontWeight: FontWeight.bold,
+                    fontSize: 14,
+                    color: iconColor,
+                  ),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
                 ),
               ),
-              const Spacer(),
+              const SizedBox(width: 6),
               if (isInstalled)
                 Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                  margin: const EdgeInsets.only(right: 6),
+                  padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2.5),
                   decoration: BoxDecoration(
                     color: const Color(0xFF25D366),
-                    borderRadius: BorderRadius.circular(10),
+                    borderRadius: BorderRadius.circular(8),
                   ),
                   child: const Text(
                     'Aktif di WA',
-                    style: TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.bold),
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 10.5,
+                      fontWeight: FontWeight.bold,
+                    ),
                   ),
                 ),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2.5),
+                decoration: BoxDecoration(
+                  color: isDark ? Colors.white12 : Colors.black.withAlpha(20),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Text(
+                  pack.animatedStickerPack ? 'Animasi (≤500KB)' : 'Statis (≤100KB)',
+                  style: TextStyle(
+                    fontSize: 10,
+                    fontWeight: FontWeight.w600,
+                    color: iconColor,
+                  ),
+                ),
+              ),
             ],
           ),
           const SizedBox(height: 8),
@@ -412,6 +477,8 @@ class _PackDetailScreenState extends State<PackDetailScreen> {
                 : Icon(buttonIcon, size: 22),
             label: Text(
               _isExporting ? 'Menghubungkan ke WhatsApp...' : buttonText,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
               style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold),
             ),
           ),

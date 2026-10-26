@@ -29,6 +29,7 @@ class _CreatePackDialogState extends State<CreatePackDialog> {
   late final TextEditingController _nameController;
   late final TextEditingController _publisherController;
   bool _isCreating = false;
+  bool _animatedStickerPack = false;
 
   @override
   void initState() {
@@ -65,6 +66,7 @@ class _CreatePackDialogState extends State<CreatePackDialog> {
         publisher: _publisherController.text.trim().isEmpty
             ? 'Sticker Maker'
             : _publisherController.text.trim(),
+        animatedStickerPack: _animatedStickerPack,
       );
       if (mounted) {
         Navigator.of(context).pop<StickerPack>(newPack);
@@ -229,6 +231,133 @@ class _CreatePackDialogState extends State<CreatePackDialog> {
                               ),
                             ),
                           ),
+                        ),
+
+                        const SizedBox(height: 18),
+
+                        // 3. Field: Tipe Paket Stiker (Statis 100KB vs Animasi 500KB)
+                        _buildFieldLabel(
+                          label: 'TIPE PAKET STIKER (BATAS UKURAN)',
+                          isRequired: false,
+                          isDark: isDark,
+                        ),
+                        const SizedBox(height: 8),
+                        Row(
+                          children: [
+                            Expanded(
+                              child: InkWell(
+                                onTap: () => setState(() => _animatedStickerPack = false),
+                                borderRadius: BorderRadius.circular(16),
+                                child: Container(
+                                  padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 12),
+                                  decoration: BoxDecoration(
+                                    color: !_animatedStickerPack
+                                        ? const Color(0xFF25D366).withAlpha(isDark ? 50 : 25)
+                                        : (isDark ? Colors.white.withAlpha(10) : Colors.black.withAlpha(5)),
+                                    borderRadius: BorderRadius.circular(16),
+                                    border: Border.all(
+                                      color: !_animatedStickerPack
+                                          ? const Color(0xFF25D366)
+                                          : (isDark ? Colors.white12 : Colors.black12),
+                                      width: 1.5,
+                                    ),
+                                  ),
+                                  child: Column(
+                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    children: [
+                                      Row(
+                                        children: [
+                                          Icon(
+                                            Icons.image_outlined,
+                                            size: 16,
+                                            color: !_animatedStickerPack
+                                                ? const Color(0xFF25D366)
+                                                : (isDark ? Colors.grey[400] : Colors.grey[600]),
+                                          ),
+                                          const SizedBox(width: 6),
+                                          Text(
+                                            'Statis',
+                                            style: GoogleFonts.plusJakartaSans(
+                                              fontWeight: FontWeight.bold,
+                                              fontSize: 13,
+                                              color: !_animatedStickerPack
+                                                  ? const Color(0xFF25D366)
+                                                  : (isDark ? Colors.white : Colors.black87),
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                      const SizedBox(height: 4),
+                                      Text(
+                                        'Standar WA (< 100 KB)',
+                                        style: GoogleFonts.plusJakartaSans(
+                                          fontSize: 11,
+                                          color: isDark ? Colors.grey[400] : Colors.grey[600],
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ),
+                            ),
+                            const SizedBox(width: 10),
+                            Expanded(
+                              child: InkWell(
+                                onTap: () => setState(() => _animatedStickerPack = true),
+                                borderRadius: BorderRadius.circular(16),
+                                child: Container(
+                                  padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 12),
+                                  decoration: BoxDecoration(
+                                    color: _animatedStickerPack
+                                        ? const Color(0xFF25D366).withAlpha(isDark ? 50 : 25)
+                                        : (isDark ? Colors.white.withAlpha(10) : Colors.black.withAlpha(5)),
+                                    borderRadius: BorderRadius.circular(16),
+                                    border: Border.all(
+                                      color: _animatedStickerPack
+                                          ? const Color(0xFF25D366)
+                                          : (isDark ? Colors.white12 : Colors.black12),
+                                      width: 1.5,
+                                    ),
+                                  ),
+                                  child: Column(
+                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    children: [
+                                      Row(
+                                        children: [
+                                          Icon(
+                                            Icons.motion_photos_on_outlined,
+                                            size: 16,
+                                            color: _animatedStickerPack
+                                                ? const Color(0xFF25D366)
+                                                : (isDark ? Colors.grey[400] : Colors.grey[600]),
+                                          ),
+                                          const SizedBox(width: 6),
+                                          Text(
+                                            'Animasi',
+                                            style: GoogleFonts.plusJakartaSans(
+                                              fontWeight: FontWeight.bold,
+                                              fontSize: 13,
+                                              color: _animatedStickerPack
+                                                  ? const Color(0xFF25D366)
+                                                  : (isDark ? Colors.white : Colors.black87),
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                      const SizedBox(height: 4),
+                                      Text(
+                                        'Batas Luas (< 500 KB)',
+                                        style: GoogleFonts.plusJakartaSans(
+                                          fontSize: 11,
+                                          color: isDark ? Colors.grey[400] : Colors.grey[600],
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ],
                         ),
 
                         const SizedBox(height: 28),
