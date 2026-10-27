@@ -11,6 +11,7 @@ import 'package:sticker_flutter/ui/screens/creator_collection_screen.dart';
 import 'package:sticker_flutter/ui/screens/permissions_preferences_screen.dart';
 import 'package:sticker_flutter/ui/screens/whatsapp_connection_screen.dart';
 import 'package:sticker_flutter/ui/screens/cloud_backup_screen.dart';
+import 'package:sticker_flutter/ui/screens/duplicate_stickers_screen.dart';
 import 'package:sticker_flutter/ui/widgets/app_notification.dart';
 
 /// Screen displaying user account details, system permissions access, storage management, and app updates.
@@ -283,6 +284,21 @@ class _AccountScreenState extends State<AccountScreen> {
               _buildSettingsCard(
                 isDark: isDark,
                 children: [
+                  _SettingsListTile(
+                    title: 'Pindai Stiker "Duplikat"',
+                    subtitle: 'Pindai otomatis & kelola stiker kembar antar paket',
+                    onTap: () {
+                      Navigator.of(context).push(
+                        DuplicateStickersScreen.route(),
+                      );
+                    },
+                  ),
+                  Divider(
+                    height: 1,
+                    indent: 20,
+                    endIndent: 20,
+                    color: isDark ? const Color(0x24FFFFFF) : const Color(0x1F000000),
+                  ),
                   _SettingsListTile(
                     title: 'Perizinan & Preferensi',
                     subtitle: 'Izin akses galeri foto, kamera, & notifikasi',

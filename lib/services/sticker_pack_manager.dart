@@ -16,6 +16,8 @@ class StickerPackManager extends ChangeNotifier {
   final Map<String, bool> _installedStatus = {};
 
   bool _isInitialized = false;
+  static int _packCounter = 0;
+  static int _stickerCounter = 0;
 
   List<StickerPack> get packs => List.unmodifiable(_packs);
   bool get isLoading => _isLoading;
@@ -90,8 +92,8 @@ class StickerPackManager extends ChangeNotifier {
     String publisher = 'Sticker Maker',
     bool animatedStickerPack = false,
   }) async {
-    final timestamp = DateTime.now().millisecondsSinceEpoch;
-    final identifier = 'pack_$timestamp';
+    final timestamp = DateTime.now().microsecondsSinceEpoch;
+    final identifier = 'pack_${timestamp}_${++_packCounter}';
 
     final dirPath = _stickersDirectory ??
         await WhatsAppStickersService.getStickersDirectory();
@@ -150,8 +152,8 @@ class StickerPackManager extends ChangeNotifier {
     final dirPath = _stickersDirectory ??
         await WhatsAppStickersService.getStickersDirectory();
     final packDirPath = '$dirPath/$packIdentifier';
-    final timestamp = DateTime.now().millisecondsSinceEpoch;
-    final fileName = 'sticker_$timestamp.webp';
+    final timestamp = DateTime.now().microsecondsSinceEpoch;
+    final fileName = 'sticker_${timestamp}_${++_stickerCounter}.webp';
 
     final maxBytes = shouldBeAnimated
         ? WhatsAppStickerValidator.maxAnimatedStickerFileSizeBytes
@@ -222,8 +224,8 @@ class StickerPackManager extends ChangeNotifier {
     final dirPath = _stickersDirectory ??
         await WhatsAppStickersService.getStickersDirectory();
     final packDirPath = '$dirPath/$packIdentifier';
-    final timestamp = DateTime.now().millisecondsSinceEpoch;
-    final fileName = 'sticker_$timestamp.webp';
+    final timestamp = DateTime.now().microsecondsSinceEpoch;
+    final fileName = 'sticker_${timestamp}_${++_stickerCounter}.webp';
 
     final processed = await StickerImageProcessor.processVideoToStickerWebp(
       videoPath: videoPath,
@@ -294,8 +296,8 @@ class StickerPackManager extends ChangeNotifier {
     for (int i = 0; i < total; i++) {
       onProgress?.call(i + 1, total);
       final imageBytes = toAddBytes[i];
-      final timestamp = DateTime.now().millisecondsSinceEpoch + i;
-      final fileName = 'sticker_$timestamp.webp';
+      final timestamp = DateTime.now().microsecondsSinceEpoch;
+      final fileName = 'sticker_${timestamp}_${++_stickerCounter}.webp';
 
       // 1. Process image to compliant 512x512 WebP (guaranteed <= maxBytes)
       final processed = await StickerImageProcessor.processToStickerWebp(
@@ -366,6 +368,80 @@ class StickerPackManager extends ChangeNotifier {
 
     await _savePacks();
     notifyListeners();
+  }
+
+  /// Replace an existing sticker in a pack with new image bytes.
+  Future<StickerItem> replaceStickerInPack({
+    required String packIdentifier,
+    required String oldFileName,
+    required Uint8List newImageBytes,
+    List<String>? newEmojis,
+  }) async {
+    final packIndex = _packs.indexWhere((p) => p.identifier == packIdentifier);
+    if (packIndex == -1) {
+      throw Exception('Paket stiker dengan ID $packIdentifier tidak ditemukan.');
+    }
+
+    final currentPack = _packs[packIndex];
+    final stickerIndex =
+        currentPack.stickers.indexWhere((s) => s.imageFileName == oldFileName);
+    if (stickerIndex == -1) {
+      throw Exception('Stiker $oldFileName tidak ditemukan dalam paket.');
+    }
+
+    final oldSticker = currentPack.stickers[stickerIndex];
+    final dirPath = _stickersDirectory ??
+        await WhatsAppStickersService.getStickersDirectory();
+    final packDirPath = '$dirPath/$packIdentifier';
+
+    // Delete old sticker file if it exists
+    final oldFile = File('$packDirPath/$oldFileName');
+    if (oldFile.existsSync()) {
+      try {
+        oldFile.deleteSync();
+      } catch (e) {
+        debugPrint('Could not delete old sticker file: $e');
+      }
+    }
+
+    final timestamp = DateTime.now().microsecondsSinceEpoch;
+    final newFileName = 'sticker_${timestamp}_${++_stickerCounter}.webp';
+
+    final maxBytes = currentPack.animatedStickerPack
+        ? WhatsAppStickerValidator.maxAnimatedStickerFileSizeBytes
+        : WhatsAppStickerValidator.maxStickerFileSizeBytes;
+
+    // Process new image into 512x512 WebP (transparent, compliant)
+    final processed = await StickerImageProcessor.processToStickerWebp(
+      newImageBytes,
+      maxBytes: maxBytes,
+    );
+
+    await StickerImageProcessor.saveStickerFile(
+      packDirectoryPath: packDirPath,
+      fileName: newFileName,
+      bytes: processed.webpBytes,
+    );
+
+    final currentVersion = int.tryParse(currentPack.imageDataVersion) ?? 1;
+    final newVersion = (currentVersion + 1).toString();
+
+    final updatedSticker = StickerItem(
+      imageFileName: newFileName,
+      emojis: newEmojis ?? oldSticker.emojis,
+    );
+
+    final updatedStickers = List<StickerItem>.from(currentPack.stickers);
+    updatedStickers[stickerIndex] = updatedSticker;
+
+    _packs[packIndex] = currentPack.copyWith(
+      imageDataVersion: newVersion,
+      stickers: updatedStickers,
+    );
+
+    await _savePacks();
+    notifyListeners();
+    return updatedSticker;
   }
 
   /// Delete an entire pack and all its associated files.
