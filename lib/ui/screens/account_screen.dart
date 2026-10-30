@@ -14,6 +14,8 @@ import 'package:sticker_flutter/ui/screens/whatsapp_connection_screen.dart';
 import 'package:sticker_flutter/ui/screens/cloud_backup_screen.dart';
 import 'package:sticker_flutter/ui/screens/duplicate_stickers_screen.dart';
 import 'package:sticker_flutter/ui/widgets/app_notification.dart';
+import 'package:sticker_flutter/ui/widgets/social_media_buttons.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 /// Screen displaying user account details, system permissions access, storage management, and app updates.
 class AccountScreen extends StatefulWidget {
@@ -33,6 +35,44 @@ class _AccountScreenState extends State<AccountScreen> {
   final _profileService = CreatorProfileService();
   bool _isCheckingUpdate = false;
   String _cacheSizeText = 'Menghitung...';
+
+  // Tautan Akun Media Sosial (Dikosongkan terlebih dahulu, siap diisi manual)
+  static const String instagramUrl = '';
+  static const String facebookUrl = '';
+  static const String tiktokUrl = '';
+  static const String twitterUrl = '';
+  static const String linkedinUrl = '';
+
+  Future<void> _openSocialLink(String url, String platformName) async {
+    if (url.trim().isEmpty) {
+      if (mounted) {
+        AppNotification.show(
+          context,
+          message: 'Tautan $platformName belum diisi.',
+          isSuccess: false,
+        );
+      }
+      return;
+    }
+    final uri = Uri.tryParse(url.trim());
+    if (uri != null) {
+      try {
+        if (await canLaunchUrl(uri)) {
+          await launchUrl(uri, mode: LaunchMode.externalApplication);
+          return;
+        }
+      } catch (e) {
+        debugPrint('Error launching $platformName link: $e');
+      }
+    }
+    if (mounted) {
+      AppNotification.show(
+        context,
+        message: 'Tidak dapat membuka tautan $platformName.',
+        isSuccess: false,
+      );
+    }
+  }
 
   @override
   void initState() {
@@ -438,18 +478,16 @@ class _AccountScreenState extends State<AccountScreen> {
               ),
               const SizedBox(height: 24),
 
-              // Version Footer
-              Center(
-                child: Text(
-                  'Sticker Maker v1.0.0+1 • Made with Flutter',
-                  style: GoogleFonts.plusJakartaSans(
-                    fontSize: 12,
-                    fontWeight: FontWeight.w500,
-                    color: isDark ? Colors.grey[400] : const Color(0xFFB0BEC5),
-                  ),
-                ),
+              // Social Media Profile Buttons (Circle Icons)
+              SocialMediaButtonsRow(
+                isDark: isDark,
+                onTapInstagram: () => _openSocialLink(instagramUrl, 'Instagram'),
+                onTapFacebook: () => _openSocialLink(facebookUrl, 'Facebook'),
+                onTapTikTok: () => _openSocialLink(tiktokUrl, 'TikTok'),
+                onTapTwitter: () => _openSocialLink(twitterUrl, 'Twitter / X'),
+                onTapLinkedIn: () => _openSocialLink(linkedinUrl, 'LinkedIn'),
               ),
-              const SizedBox(height: 12),
+              const SizedBox(height: 18),
             ],
           ),
         ),
