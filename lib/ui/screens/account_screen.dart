@@ -3,7 +3,6 @@ import 'dart:ui';
 import 'package:flutter/material.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:google_fonts/google_fonts.dart';
-import 'package:sticker_flutter/services/app_update_notification_service.dart';
 import 'package:sticker_flutter/services/app_update_service.dart';
 import 'package:sticker_flutter/services/creator_profile_service.dart';
 import 'package:sticker_flutter/services/sticker_pack_manager.dart';
@@ -197,21 +196,10 @@ class _AccountScreenState extends State<AccountScreen> {
             ],
           ),
           content: Text(
-            'Aplikasi Sticko Anda sudah menggunakan versi paling mutakhir (v${AppUpdateService.defaultCurrentVersion}).\n\nSistem notifikasi bilah status khusus pembaruan APK aktif secara real-time di handphone Anda.',
+            'Aplikasi Sticko Anda sudah menggunakan versi paling mutakhir (v${AppUpdateService.defaultCurrentVersion}).\n\nFitur pemeriksaan pembaruan dan notifikasi bilah status aktif secara otomatis.',
             style: const TextStyle(fontSize: 14, height: 1.45),
           ),
           actions: [
-            TextButton(
-              onPressed: () async {
-                Navigator.of(ctx).pop();
-                await AppUpdateNotificationService().showUpdateAvailable(
-                  version: '1.0.3 (Uji Coba)',
-                  title: 'Sticko: Pembaruan APK Siap',
-                  message: 'Notifikasi bilah status Sticko aktif dan berfungsi secara normal!',
-                );
-              },
-              child: const Text('Tes Notifikasi'),
-            ),
             FilledButton(
               style: FilledButton.styleFrom(
                 backgroundColor: const Color(0xFF128C7E),
