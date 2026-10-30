@@ -3,6 +3,7 @@ import 'dart:ui';
 import 'package:flutter/material.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'package:sticker_flutter/services/app_update_notification_service.dart';
 import 'package:sticker_flutter/services/app_update_service.dart';
 import 'package:sticker_flutter/services/creator_profile_service.dart';
 import 'package:sticker_flutter/services/sticker_pack_manager.dart';
@@ -97,38 +98,92 @@ class _AccountScreenState extends State<AccountScreen> {
 
   Future<void> _checkForUpdate() async {
     setState(() => _isCheckingUpdate = true);
-    await Future.delayed(const Duration(milliseconds: 700));
+    final updateInfo = await AppUpdateService.checkRemoteUpdate(
+      showStatusBarNotification: true,
+    );
 
     if (!mounted) return;
     setState(() => _isCheckingUpdate = false);
 
-    showDialog(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(5)),
-        title: const Row(
-          children: [
-            Icon(Icons.check_circle_rounded, color: Color(0xFF25D366), size: 28),
-            SizedBox(width: 12),
-            Text('Versi Terbaru', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+    if (updateInfo != null && updateInfo.hasUpdate) {
+      showDialog(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(5)),
+          title: const Row(
+            children: [
+              Icon(Icons.system_update_rounded, color: Color(0xFF128C7E), size: 28),
+              SizedBox(width: 12),
+              Text('Pembaruan Tersedia', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+            ],
+          ),
+          content: Text(
+            'Versi ${updateInfo.latestVersion} telah tersedia!\n\nNotifikasi telah dikirimkan ke bilah status handphone Anda. Buka bilah status atau ketuk tombol di bawah untuk mengunduh.',
+            style: const TextStyle(fontSize: 14, height: 1.45),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(ctx).pop(),
+              child: const Text('Nanti'),
+            ),
+            FilledButton(
+              style: FilledButton.styleFrom(
+                backgroundColor: const Color(0xFF128C7E),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(5)),
+              ),
+              onPressed: () {
+                Navigator.of(ctx).pop();
+                AppUpdateService.downloadAndInstallApk(
+                  apkUrl: updateInfo.updateUrl,
+                  onProgress: (_) {},
+                  targetVersion: updateInfo.latestVersion,
+                );
+              },
+              child: const Text('Perbarui Sekarang'),
+            ),
           ],
         ),
-        content: const Text(
-          'Aplikasi Sticker Maker Anda sudah menggunakan versi paling mutakhir (v1.0.0+1).\n\nFitur force update dan pemeriksaan pembaruan aktif secara otomatis.',
-          style: TextStyle(fontSize: 14, height: 1.45),
-        ),
-        actions: [
-          FilledButton(
-            style: FilledButton.styleFrom(
-              backgroundColor: const Color(0xFF128C7E),
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(5)),
-            ),
-            onPressed: () => Navigator.of(ctx).pop(),
-            child: const Text('Oke'),
+      );
+    } else {
+      showDialog(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(5)),
+          title: const Row(
+            children: [
+              Icon(Icons.check_circle_rounded, color: Color(0xFF25D366), size: 28),
+              SizedBox(width: 12),
+              Text('Versi Terbaru', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+            ],
           ),
-        ],
-      ),
-    );
+          content: Text(
+            'Aplikasi Sticko Anda sudah menggunakan versi paling mutakhir (v${AppUpdateService.defaultCurrentVersion}).\n\nSistem notifikasi bilah status khusus pembaruan APK aktif secara real-time di handphone Anda.',
+            style: const TextStyle(fontSize: 14, height: 1.45),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () async {
+                Navigator.of(ctx).pop();
+                await AppUpdateNotificationService().showUpdateAvailable(
+                  version: '1.0.3 (Uji Coba)',
+                  title: 'Sticko: Pembaruan APK Siap',
+                  message: 'Notifikasi bilah status Sticko aktif dan berfungsi secara normal!',
+                );
+              },
+              child: const Text('Tes Notifikasi'),
+            ),
+            FilledButton(
+              style: FilledButton.styleFrom(
+                backgroundColor: const Color(0xFF128C7E),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(5)),
+              ),
+              onPressed: () => Navigator.of(ctx).pop(),
+              child: const Text('Oke'),
+            ),
+          ],
+        ),
+      );
+    }
   }
 
   void _showTutorialDialog() {

@@ -1,15 +1,21 @@
 package com.pkri.sticko
 
 import android.app.Activity
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
+import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.graphics.Bitmap
+import android.media.MediaMetadataRetriever
 import android.net.Uri
+import android.os.Build
 import android.util.Log
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
-import android.graphics.Bitmap
-import android.media.MediaMetadataRetriever
 import java.io.ByteArrayOutputStream
 import java.io.File
 
@@ -18,6 +24,9 @@ class MainActivity : FlutterActivity() {
     companion object {
         private const val TAG = "MainActivity"
         private const val CHANNEL = "com.pkri.sticko/stickers"
+        private const val NOTIFICATION_CHANNEL = "com.pkri.sticko/update_notifications"
+        private const val UPDATE_CHANNEL_ID = "sticko_apk_updates"
+        private const val UPDATE_NOTIFICATION_ID = 2026
         private const val ADD_PACK_REQUEST_CODE = 200
 
         private const val EXTRA_STICKER_PACK_ID = "sticker_pack_id"
@@ -33,6 +42,58 @@ class MainActivity : FlutterActivity() {
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
+
+        // Initialize status bar notification channel for APK updates
+        createNotificationChannel()
+
+        // Handle APK update status bar notifications
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, NOTIFICATION_CHANNEL).setMethodCallHandler { call, result ->
+            when (call.method) {
+                "initNotificationChannel" -> {
+                    createNotificationChannel()
+                    result.success(true)
+                }
+
+                "showUpdateNotification" -> {
+                    val title = call.argument<String>("title") ?: "Pembaruan Sticko Tersedia"
+                    val body = call.argument<String>("body") ?: "Versi baru tersedia untuk diunduh."
+                    val version = call.argument<String>("version") ?: ""
+                    val downloadUrl = call.argument<String>("downloadUrl") ?: ""
+                    showUpdateNotification(title, body, version, downloadUrl)
+                    result.success(true)
+                }
+
+                "updateDownloadProgress" -> {
+                    val progress = call.argument<Int>("progress") ?: 0
+                    val max = call.argument<Int>("max") ?: 100
+                    val title = call.argument<String>("title") ?: "Mengunduh Pembaruan Sticko"
+                    val body = call.argument<String>("body") ?: "$progress% selesai"
+                    updateDownloadProgress(progress, max, title, body)
+                    result.success(true)
+                }
+
+                "showDownloadComplete" -> {
+                    val apkPath = call.argument<String>("apkPath")
+                    val title = call.argument<String>("title") ?: "Pembaruan Siap Dipasang"
+                    val body = call.argument<String>("body") ?: "Unduhan selesai. Ketuk untuk memasang versi terbaru."
+                    val version = call.argument<String>("version") ?: ""
+                    showDownloadComplete(apkPath, title, body, version)
+                    result.success(true)
+                }
+
+                "clearNotification" -> {
+                    clearNotification()
+                    result.success(true)
+                }
+
+                "areNotificationsEnabled" -> {
+                    val enabled = areNotificationsEnabled()
+                    result.success(enabled)
+                }
+
+                else -> result.notImplemented()
+            }
+        }
 
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CHANNEL).setMethodCallHandler { call, result ->
             when (call.method) {
@@ -383,5 +444,172 @@ class MainActivity : FlutterActivity() {
                 }
             }
         }
+    }
+
+    private fun createNotificationChannel() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val channel = NotificationChannel(
+                UPDATE_CHANNEL_ID,
+                "Pembaruan Aplikasi Sticko",
+                NotificationManager.IMPORTANCE_HIGH
+            ).apply {
+                description = "Notifikasi bilah status pembaruan APK Sticko"
+                setShowBadge(true)
+                enableLights(true)
+            }
+            val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            notificationManager.createNotificationChannel(channel)
+        }
+    }
+
+    private fun getUpdateIconRes(): Int {
+        val resId = resources.getIdentifier("ic_stat_update", "drawable", packageName)
+        return if (resId != 0) resId else android.R.drawable.stat_sys_download_done
+    }
+
+    private fun getDownloadIconRes(): Int {
+        return android.R.drawable.stat_sys_download
+    }
+
+    private fun areNotificationsEnabled(): Boolean {
+        val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+            notificationManager.areNotificationsEnabled()
+        } else {
+            true
+        }
+    }
+
+    private fun showUpdateNotification(title: String, body: String, version: String, downloadUrl: String) {
+        val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        createNotificationChannel()
+
+        val intent = Intent(this, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            putExtra("action", "SHOW_APP_UPDATE")
+            putExtra("latest_version", version)
+            putExtra("download_url", downloadUrl)
+        }
+        val pendingIntent = PendingIntent.getActivity(
+            this,
+            UPDATE_NOTIFICATION_ID,
+            intent,
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            } else {
+                PendingIntent.FLAG_UPDATE_CURRENT
+            }
+        )
+
+        val builder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            Notification.Builder(this, UPDATE_CHANNEL_ID)
+        } else {
+            @Suppress("DEPRECATION")
+            Notification.Builder(this)
+        }
+
+        builder.setContentTitle(title)
+            .setContentText(body)
+            .setSmallIcon(getUpdateIconRes())
+            .setContentIntent(pendingIntent)
+            .setAutoCancel(true)
+            .setOngoing(false)
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+            builder.setVisibility(Notification.VISIBILITY_PUBLIC)
+            builder.setCategory(Notification.CATEGORY_RECOMMENDATION)
+        }
+
+        @Suppress("DEPRECATION")
+        builder.setPriority(Notification.PRIORITY_HIGH)
+
+        notificationManager.notify(UPDATE_NOTIFICATION_ID, builder.build())
+    }
+
+    private fun updateDownloadProgress(progress: Int, max: Int, title: String, body: String) {
+        val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        createNotificationChannel()
+
+        val intent = Intent(this, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+        }
+        val pendingIntent = PendingIntent.getActivity(
+            this,
+            UPDATE_NOTIFICATION_ID,
+            intent,
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            } else {
+                PendingIntent.FLAG_UPDATE_CURRENT
+            }
+        )
+
+        val builder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            Notification.Builder(this, UPDATE_CHANNEL_ID)
+        } else {
+            @Suppress("DEPRECATION")
+            Notification.Builder(this)
+        }
+
+        builder.setContentTitle(title)
+            .setContentText(body)
+            .setSmallIcon(getDownloadIconRes())
+            .setContentIntent(pendingIntent)
+            .setProgress(max, progress, false)
+            .setOngoing(true)
+            .setOnlyAlertOnce(true)
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+            builder.setSubText("$progress%")
+        }
+
+        notificationManager.notify(UPDATE_NOTIFICATION_ID, builder.build())
+    }
+
+    private fun showDownloadComplete(apkPath: String?, title: String, body: String, version: String) {
+        val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        createNotificationChannel()
+
+        val intent = Intent(this, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            putExtra("action", "INSTALL_APP_UPDATE")
+            if (apkPath != null) putExtra("apk_path", apkPath)
+            putExtra("version", version)
+        }
+        val pendingIntent = PendingIntent.getActivity(
+            this,
+            UPDATE_NOTIFICATION_ID,
+            intent,
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            } else {
+                PendingIntent.FLAG_UPDATE_CURRENT
+            }
+        )
+
+        val builder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            Notification.Builder(this, UPDATE_CHANNEL_ID)
+        } else {
+            @Suppress("DEPRECATION")
+            Notification.Builder(this)
+        }
+
+        builder.setContentTitle(title)
+            .setContentText(body)
+            .setSmallIcon(getUpdateIconRes())
+            .setContentIntent(pendingIntent)
+            .setProgress(0, 0, false)
+            .setOngoing(false)
+            .setAutoCancel(true)
+
+        @Suppress("DEPRECATION")
+        builder.setPriority(Notification.PRIORITY_HIGH)
+
+        notificationManager.notify(UPDATE_NOTIFICATION_ID, builder.build())
+    }
+
+    private fun clearNotification() {
+        val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        notificationManager.cancel(UPDATE_NOTIFICATION_ID)
     }
 }
