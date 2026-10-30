@@ -1,0 +1,8 @@
+{
+  "latest_version": "1.0.2",
+  "min_required_version": "1.0.0",
+  "title": "Pembaruan Sticko Tersedia",
+  "message": "Versi terbaru Sticko telah tersedia. Ketuk untuk memperbarui aplikasi.",
+  "apk_url": "https://github.com/vikri546/sticko/releases/latest",
+  "is_force_update": false
+}

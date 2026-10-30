@@ -45,13 +45,13 @@ class AppUpdateService {
   static const String defaultUpdateCheckUrl =
       'https://raw.githubusercontent.com/vikri546/sticko/main/version.json';
 
-  /// Compare two semantic version strings (e.g., '1.0.0' vs '1.1.0').
+  /// Compare two semantic version strings (e.g., '1.0.0' vs '1.1.0' or 'v1.0.0' vs 'v1.1.0').
   /// Returns `true` if [current] is strictly older than [target].
   static bool isVersionOlder(String current, String target) {
     try {
-      // Clean build numbers (+1, etc.)
-      final cleanCurrent = current.split('+').first.trim();
-      final cleanTarget = target.split('+').first.trim();
+      // Clean build numbers (+1, etc.) and strip optional 'v' / 'V' prefixes
+      final cleanCurrent = current.replaceFirst(RegExp(r'^[vV]'), '').split('+').first.trim();
+      final cleanTarget = target.replaceFirst(RegExp(r'^[vV]'), '').split('+').first.trim();
 
       final currentParts = cleanCurrent.split('.').map((e) => int.tryParse(e) ?? 0).toList();
       final targetParts = cleanTarget.split('.').map((e) => int.tryParse(e) ?? 0).toList();
@@ -89,7 +89,17 @@ class AppUpdateService {
     try {
       final request = await client.getUrl(Uri.parse(targetUrl));
       request.headers.set('User-Agent', 'Sticko-App-Update-Checker');
-      final response = await request.close();
+      request.headers.set('Accept', 'application/json');
+      HttpClientResponse response = await request.close();
+
+      // If version.json is not available and no custom checkUrl was provided, fallback to GitHub Releases API
+      if (response.statusCode != 200 && checkUrl == null) {
+        await response.drain().catchError((_) {});
+        final fallbackReq = await client.getUrl(Uri.parse(defaultGitHubReleasesApi));
+        fallbackReq.headers.set('User-Agent', 'Sticko-App-Update-Checker');
+        fallbackReq.headers.set('Accept', 'application/json');
+        response = await fallbackReq.close();
+      }
 
       if (response.statusCode == 200) {
         final body = await response.transform(utf8.decoder).join();
@@ -215,6 +225,8 @@ class AppUpdateService {
     final client = HttpClient();
     client.connectionTimeout = const Duration(seconds: 15);
     final request = await client.getUrl(Uri.parse(apkUrl));
+    request.followRedirects = true;
+    request.maxRedirects = 8;
     final response = await request.close();
 
     if (response.statusCode != 200) {
