@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/services.dart';
+import 'package:sticker_flutter/services/google_analytics_service.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 /// Model representing a single sticker item in a pack.
@@ -289,9 +290,18 @@ class WhatsAppStickersService {
       },
     );
 
+    final status = result?['status'] ?? 'error';
+    final message = result?['message'] ?? 'Unknown error occurred';
+
+    GoogleAnalyticsService().logAddToWhatsApp(
+      packId: identifier,
+      stickerCount: 0,
+      success: status == 'success',
+    );
+
     return {
-      'status': result?['status'] ?? 'error',
-      'message': result?['message'] ?? 'Unknown error occurred',
+      'status': status,
+      'message': message,
     };
   }
 

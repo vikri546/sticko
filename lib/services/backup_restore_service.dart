@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:archive/archive.dart';
 import 'package:flutter/foundation.dart';
 import 'package:path_provider/path_provider.dart';
+import 'package:sticker_flutter/services/google_analytics_service.dart';
 import 'package:sticker_flutter/services/sticker_pack_manager.dart';
 import 'package:sticker_flutter/services/whatsapp_stickers_service.dart';
 
@@ -239,6 +240,11 @@ class BackupRestoreService {
 
     final backupFile = File(targetFilePath);
     backupFile.writeAsBytesSync(zipData, flush: true);
+
+    GoogleAnalyticsService().logBackupCreated(
+      packCount: targetPacks.length,
+      stickerCount: totalStickers,
+    );
 
     return BackupMetadata(
       filePath: targetFilePath,
@@ -511,6 +517,10 @@ class BackupRestoreService {
       await manager.initialize(
         customStickersDir: targetStickersDir,
         force: true,
+      );
+
+      GoogleAnalyticsService().logBackupRestored(
+        packCount: restoredPacksCount,
       );
 
       return RestoreResult(

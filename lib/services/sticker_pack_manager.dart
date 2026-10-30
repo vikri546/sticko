@@ -1,5 +1,6 @@
 import 'dart:io';
 import 'package:flutter/foundation.dart';
+import 'package:sticker_flutter/services/google_analytics_service.dart';
 import 'package:sticker_flutter/services/sticker_image_processor.dart';
 import 'package:sticker_flutter/services/whatsapp_sticker_validator.dart';
 import 'package:sticker_flutter/services/whatsapp_stickers_service.dart';
@@ -115,6 +116,10 @@ class StickerPackManager extends ChangeNotifier {
     _packs = [..._packs, newPack];
     await _savePacks();
     notifyListeners();
+    GoogleAnalyticsService().logCreatePack(
+      packName: newPack.name,
+      isAnimated: newPack.animatedStickerPack,
+    );
     return newPack;
   }
 
@@ -192,6 +197,11 @@ class StickerPackManager extends ChangeNotifier {
     _packs[packIndex] = updatedPack;
     await _savePacks();
     notifyListeners();
+    GoogleAnalyticsService().logAddSticker(
+      packId: packIdentifier,
+      stickerCount: currentPack.stickers.length + 1,
+      isAnimated: shouldBeAnimated,
+    );
     return newSticker;
   }
 

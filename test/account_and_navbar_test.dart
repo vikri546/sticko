@@ -285,7 +285,7 @@ void main() {
       expect(find.text('Kamera'), findsOneWidget);
       expect(find.text('Notifikasi'), findsOneWidget);
 
-      // Verify capsule buttons rendered without icons (defaults to Aktif on desktop macOS test runner)
+      // Verify capsule buttons rendered without icons (3 permissions, Google Analytics is active but hidden from UI)
       expect(find.text('Aktif'), findsNWidgets(3));
       expect(find.text('Buka'), findsOneWidget);
 

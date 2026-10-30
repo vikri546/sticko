@@ -1,6 +1,7 @@
 import 'dart:io';
 import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart';
+import 'package:sticker_flutter/services/google_analytics_service.dart';
 import 'package:sticker_flutter/services/sticker_pack_manager.dart';
 import 'package:sticker_flutter/services/whatsapp_stickers_service.dart';
 
@@ -170,6 +171,9 @@ class DuplicateStickersService extends ChangeNotifier {
 
       _duplicateGroups = results;
       _lastScanTime = DateTime.now();
+      GoogleAnalyticsService().logScanDuplicates(
+        duplicatesFound: totalDuplicateCount,
+      );
       return _duplicateGroups;
     } finally {
       _isScanning = false;
@@ -256,6 +260,10 @@ class DuplicateStickersService extends ChangeNotifier {
     }
 
     await scanDuplicates(packManager: manager);
+    GoogleAnalyticsService().logCleanDuplicates(
+      cleanedCount: cleanedCount,
+      savedBytes: totalPotentialSavedBytes,
+    );
     return cleanedCount;
   }
 

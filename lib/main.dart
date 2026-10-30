@@ -1,9 +1,12 @@
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'package:sticker_flutter/services/google_analytics_service.dart';
 import 'package:sticker_flutter/ui/screens/home_screen.dart';
 
-void main() {
+void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  await GoogleAnalyticsService().initialize();
+  GoogleAnalyticsService().logAppOpen();
   runApp(const StickerApp());
 }
 
@@ -15,6 +18,9 @@ class StickerApp extends StatelessWidget {
     return MaterialApp(
       title: 'Sticko',
       debugShowCheckedModeBanner: false,
+      navigatorObservers: [
+        AnalyticsRouteObserver(),
+      ],
       themeMode: ThemeMode.dark,
       theme: ThemeData(
         useMaterial3: true,
