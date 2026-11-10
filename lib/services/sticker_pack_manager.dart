@@ -33,6 +33,7 @@ class StickerPackManager extends ChangeNotifier {
     _isInitialized = false;
     _isLoading = false;
     _stickersDirectory = null;
+    WhatsAppStickersService.resetForTesting();
   }
 
   /// Check whether a pack is currently installed in WhatsApp.
@@ -544,6 +545,19 @@ class StickerPackManager extends ChangeNotifier {
         'status': 'error',
         'message':
             'Syarat minimal 3 stiker belum terpenuhi (kurang ${pack.remainingStickersNeeded} stiker lagi)',
+      };
+    }
+
+    // Check active Wi-Fi / cellular data signal and internet quota before adding/updating to WhatsApp
+    final hasInternet = await WhatsAppStickersService.hasInternetConnection();
+    if (!hasInternet) {
+      final isAlreadyInstalled = isPackInstalled(pack.identifier);
+      return {
+        'status': 'error',
+        'code': 'offline',
+        'message': isAlreadyInstalled
+            ? 'Gagal memperbarui stiker ke WhatsApp. Tidak ada sinyal Wi-Fi/data atau kuota internet aktif.'
+            : 'Gagal menambahkan stiker ke WhatsApp. Aktifkan Wi-Fi atau data seluler (kuota) terlebih dahulu.',
       };
     }
 

@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:io';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:sticker_flutter/services/google_analytics_service.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -163,6 +164,59 @@ class StickerPack {
 class WhatsAppStickersService {
   static const MethodChannel _channel =
       MethodChannel('com.pkri.sticko/stickers');
+
+  /// Optional override for testing internet connectivity / quota status.
+  @visibleForTesting
+  static Future<bool> Function()? mockConnectivityChecker;
+
+  /// Reset test overrides.
+  static void resetForTesting() {
+    mockConnectivityChecker = null;
+  }
+
+  /// Show native Android system Toast for double-back-to-exit prompt.
+  static Future<void> showExitToast([
+    String message = 'Tekan sekali lagi untuk keluar',
+  ]) async {
+    try {
+      await _channel.invokeMethod<bool>('showExitToast', {'message': message});
+    } catch (_) {}
+  }
+
+  /// Cancel any active native Android exit Toast before closing the app.
+  static Future<void> cancelExitToast() async {
+    try {
+      await _channel.invokeMethod<bool>('cancelExitToast');
+    } catch (_) {}
+  }
+
+  /// Checks whether the device has an active Wi-Fi or cellular data signal
+  /// with usable internet quota.
+  static Future<bool> hasInternetConnection() async {
+    if (mockConnectivityChecker != null) {
+      return await mockConnectivityChecker!();
+    }
+
+    try {
+      final bool? res =
+          await _channel.invokeMethod<bool>('checkInternetConnection');
+      if (res != null) {
+        return res;
+      }
+      // If MethodChannel returns null (e.g., unmocked in existing tests), default to true.
+      return true;
+    } on MissingPluginException {
+      return true;
+    } catch (_) {
+      try {
+        final lookup = await InternetAddress.lookup('whatsapp.com')
+            .timeout(const Duration(seconds: 3));
+        return lookup.isNotEmpty && lookup.first.rawAddress.isNotEmpty;
+      } catch (_) {
+        return false;
+      }
+    }
+  }
 
   /// Get the directory path where sticker packs and files must be saved.
   static Future<String> getStickersDirectory() async {

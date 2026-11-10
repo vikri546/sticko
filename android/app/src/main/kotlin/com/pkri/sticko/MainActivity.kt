@@ -10,14 +10,20 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.media.MediaMetadataRetriever
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.net.Uri
 import android.os.Build
 import android.util.Log
+import android.widget.Toast
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
 import java.io.ByteArrayOutputStream
 import java.io.File
+import java.net.HttpURLConnection
+import java.net.InetAddress
+import java.net.URL
 
 class MainActivity : FlutterActivity() {
 
@@ -41,6 +47,7 @@ class MainActivity : FlutterActivity() {
     private var pendingAddResult: MethodChannel.Result? = null
     private var updateNotificationChannel: MethodChannel? = null
     private var pendingNotificationPayload: Map<String, String>? = null
+    private var exitToast: Toast? = null
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
@@ -126,6 +133,33 @@ class MainActivity : FlutterActivity() {
                     } catch (e: Exception) {
                         result.error("STORAGE_ERROR", e.localizedMessage, null)
                     }
+                }
+
+                "checkInternetConnection" -> {
+                    if (!hasActiveNetworkSignal()) {
+                        result.success(false)
+                        return@setMethodCallHandler
+                    }
+                    Thread {
+                        val hasQuota = verifyInternetQuota()
+                        runOnUiThread {
+                            result.success(hasQuota)
+                        }
+                    }.start()
+                }
+
+                "showExitToast" -> {
+                    val message = call.argument<String>("message") ?: "Tekan sekali lagi untuk keluar"
+                    exitToast?.cancel()
+                    exitToast = Toast.makeText(applicationContext, message, Toast.LENGTH_SHORT)
+                    exitToast?.show()
+                    result.success(true)
+                }
+
+                "cancelExitToast" -> {
+                    exitToast?.cancel()
+                    exitToast = null
+                    result.success(true)
                 }
 
                 "checkWhatsAppInstalled" -> {
@@ -677,5 +711,67 @@ class MainActivity : FlutterActivity() {
     private fun clearNotification() {
         val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         notificationManager.cancel(UPDATE_NOTIFICATION_ID)
+    }
+
+    private fun hasActiveNetworkSignal(): Boolean {
+        return try {
+            val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager ?: return false
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                val activeNetwork = cm.activeNetwork ?: return false
+                val caps = cm.getNetworkCapabilities(activeNetwork) ?: return false
+                val hasTransport = caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) ||
+                    caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) ||
+                    caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) ||
+                    caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN)
+                hasTransport && caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+            } else {
+                @Suppress("DEPRECATION")
+                val netInfo = cm.activeNetworkInfo
+                @Suppress("DEPRECATION")
+                netInfo != null && netInfo.isConnected
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Error checking network signal", e)
+            false
+        }
+    }
+
+    private fun verifyInternetQuota(): Boolean {
+        try {
+            val url = URL("https://connectivitycheck.gstatic.com/generate_204")
+            val conn = (url.openConnection() as HttpURLConnection).apply {
+                requestMethod = "GET"
+                connectTimeout = 2500
+                readTimeout = 2500
+                instanceFollowRedirects = false
+                useCaches = false
+            }
+            try {
+                val responseCode = conn.responseCode
+                if (responseCode == 204) {
+                    return true
+                }
+            } finally {
+                conn.disconnect()
+            }
+        } catch (_: Exception) {
+            // Fall through to DNS + OS network validation fallback
+        }
+
+        return try {
+            val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+            val osValidated = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && cm != null) {
+                val activeNetwork = cm.activeNetwork
+                val caps = if (activeNetwork != null) cm.getNetworkCapabilities(activeNetwork) else null
+                caps?.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED) == true
+            } else {
+                true
+            }
+            if (!osValidated) return false
+            val address = InetAddress.getByName("whatsapp.com")
+            !address.hostAddress.isNullOrEmpty()
+        } catch (_: Exception) {
+            false
+        }
     }
 }

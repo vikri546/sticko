@@ -1,6 +1,8 @@
+import 'dart:async';
 import 'dart:io';
 import 'dart:ui';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:sticker_flutter/services/app_update_notification_service.dart';
 import 'package:sticker_flutter/services/app_update_service.dart';
@@ -23,6 +25,10 @@ class _HomeScreenState extends State<HomeScreen> {
   final _manager = StickerPackManager();
   late final PageController _pageController;
   int _currentTabIndex = 0;
+  bool _isExitArmed = false;
+  Timer? _exitResetTimer;
+
+  static const Duration _exitDoublePressTimeout = Duration(seconds: 2);
 
   @override
   void initState() {
@@ -39,9 +45,31 @@ class _HomeScreenState extends State<HomeScreen> {
 
   @override
   void dispose() {
+    _exitResetTimer?.cancel();
     AppUpdateNotificationService().setOnNotificationTapListener(null);
     _pageController.dispose();
     super.dispose();
+  }
+
+  Future<void> _handleSystemBackPress(bool didPop, Object? result) async {
+    if (didPop) return;
+
+    if (!_isExitArmed) {
+      _isExitArmed = true;
+      _exitResetTimer?.cancel();
+      _exitResetTimer = Timer(_exitDoublePressTimeout, () {
+        _isExitArmed = false;
+      });
+      await WhatsAppStickersService.showExitToast(
+        'Tekan sekali lagi untuk keluar',
+      );
+      return;
+    }
+
+    _exitResetTimer?.cancel();
+    _isExitArmed = false;
+    await WhatsAppStickersService.cancelExitToast();
+    await SystemNavigator.pop();
   }
 
   Future<void> _checkUpdateOnStartup() async {
@@ -134,100 +162,104 @@ class _HomeScreenState extends State<HomeScreen> {
       builder: (context, _) {
         final packs = _manager.packs;
 
-        return Scaffold(
-          extendBody: true,
-          extendBodyBehindAppBar: true,
-          backgroundColor: Colors.transparent,
-          body: PageView(
-            controller: _pageController,
-            physics: const ClampingScrollPhysics(),
-            onPageChanged: (index) {
-              setState(() {
-                _currentTabIndex = index;
-              });
-            },
-            children: [
-              Stack(
-                fit: StackFit.expand,
-                children: [
-                  Image.asset(
-                    'lib/images/homescreen.png',
-                    fit: BoxFit.cover,
-                    errorBuilder: (_, _, _) => const SizedBox.shrink(),
-                  ),
-                  SafeArea(
-                    top: true,
-                    bottom: false,
-                    child: Column(
-                      children: [
-                        AppBar(
-                          elevation: 0,
-                          backgroundColor: Colors.transparent,
-                          surfaceTintColor: Colors.transparent,
-                          centerTitle: true,
-                          title: Text(
-                            'Sticko',
-                            style: GoogleFonts.alexBrush(
-                              fontSize: 42,
-                              fontWeight: FontWeight.bold,
-                              color: const Color(0xFFF09A06),
-                              letterSpacing: 0.5,
+        return PopScope(
+          canPop: false,
+          onPopInvokedWithResult: _handleSystemBackPress,
+          child: Scaffold(
+            extendBody: true,
+            extendBodyBehindAppBar: true,
+            backgroundColor: Colors.transparent,
+            body: PageView(
+              controller: _pageController,
+              physics: const ClampingScrollPhysics(),
+              onPageChanged: (index) {
+                setState(() {
+                  _currentTabIndex = index;
+                });
+              },
+              children: [
+                Stack(
+                  fit: StackFit.expand,
+                  children: [
+                    Image.asset(
+                      'lib/images/homescreen.png',
+                      fit: BoxFit.cover,
+                      errorBuilder: (_, _, _) => const SizedBox.shrink(),
+                    ),
+                    SafeArea(
+                      top: true,
+                      bottom: false,
+                      child: Column(
+                        children: [
+                          AppBar(
+                            elevation: 0,
+                            backgroundColor: Colors.transparent,
+                            surfaceTintColor: Colors.transparent,
+                            centerTitle: true,
+                            title: Text(
+                              'Sticko',
+                              style: GoogleFonts.alexBrush(
+                                fontSize: 42,
+                                fontWeight: FontWeight.bold,
+                                color: const Color(0xFFF09A06),
+                                letterSpacing: 0.5,
+                              ),
                             ),
                           ),
-                        ),
-                        Expanded(
-                          child: _manager.isLoading
-                              ? const Center(child: CircularProgressIndicator())
-                              : packs.isEmpty
-                                  ? _buildEmptyState()
-                                  : _buildPacksList(packs),
-                        ),
-                      ],
+                          Expanded(
+                            child: _manager.isLoading
+                                ? const Center(child: CircularProgressIndicator())
+                                : packs.isEmpty
+                                    ? _buildEmptyState()
+                                    : _buildPacksList(packs),
+                          ),
+                        ],
+                      ),
                     ),
-                  ),
-                ],
-              ),
-              const AccountScreen(showAppBar: true),
-            ],
-          ),
-          bottomNavigationBar: SafeArea(
-            child: Padding(
-              padding: const EdgeInsets.only(bottom: 12),
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  FloatingPillNavBar(
-                    selectedIndex: _currentTabIndex,
-                    onTabSelected: (index) {
-                      if (_currentTabIndex != index) {
-                        setState(() {
-                          _currentTabIndex = index;
-                        });
-                        _pageController.animateToPage(
-                          index,
-                          duration: const Duration(milliseconds: 320),
-                          curve: Curves.easeInOutCubic,
-                        );
-                      }
-                    },
-                  ),
-                ],
+                  ],
+                ),
+                const AccountScreen(showAppBar: true),
+              ],
+            ),
+            bottomNavigationBar: SafeArea(
+              child: Padding(
+                padding: const EdgeInsets.only(bottom: 12),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    FloatingPillNavBar(
+                      selectedIndex: _currentTabIndex,
+                      onTabSelected: (index) {
+                        if (_currentTabIndex != index) {
+                          setState(() {
+                            _currentTabIndex = index;
+                          });
+                          _pageController.animateToPage(
+                            index,
+                            duration: const Duration(milliseconds: 320),
+                            curve: Curves.easeInOutCubic,
+                          );
+                        }
+                      },
+                    ),
+                  ],
+                ),
               ),
             ),
+            floatingActionButtonLocation: FloatingActionButtonLocation.centerFloat,
+            floatingActionButton: _currentTabIndex == 0
+                ? FloatingActionButton(
+                    key: const Key('add_pack_fab'),
+                    onPressed: _openCreatePackDialog,
+                    backgroundColor: const Color(0xFFF09A06),
+                    foregroundColor: Colors.black,
+                    elevation: 4,
+                    shape: const CircleBorder(),
+                    tooltip: 'Buat Paket Stiker',
+                    child: const Icon(Icons.add_rounded, size: 30, color: Colors.black),
+                  )
+                : null,
           ),
-          floatingActionButtonLocation: FloatingActionButtonLocation.centerFloat,
-          floatingActionButton: _currentTabIndex == 0
-              ? FloatingActionButton(
-                  key: const Key('add_pack_fab'),
-                  onPressed: _openCreatePackDialog,
-                  backgroundColor: const Color(0xFFF09A06),
-                  foregroundColor: Colors.black,
-                  elevation: 4,
-                  shape: const CircleBorder(),
-                  tooltip: 'Buat Paket Stiker',
-                  child: const Icon(Icons.add_rounded, size: 30, color: Colors.black),
-                )
-              : null,
         );
       },
     );

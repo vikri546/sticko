@@ -121,8 +121,8 @@ void main() {
         findsOneWidget,
       );
       expect(find.text('Account & Settings'), findsNothing);
-      expect(find.text('Kreator Stiker'), findsOneWidget);
-      expect(find.text('Penyimpanan Lokal Aktif'), findsOneWidget);
+      expect(find.text('Your Name'), findsOneWidget);
+      expect(find.text('Your Bio'), findsOneWidget);
       expect(find.byIcon(Icons.edit_outlined), findsOneWidget);
 
       // Check Sections (Simplified layout with Pengaturan Sistem)
@@ -199,7 +199,7 @@ void main() {
         findsOneWidget,
       );
       expect(find.text('Account & Settings'), findsNothing);
-      expect(find.text('Kreator Stiker'), findsOneWidget);
+      expect(find.text('Your Name'), findsOneWidget);
       expect(
         find.descendant(of: find.byType(AppBar), matching: find.byIcon(Icons.security_rounded)),
         findsNothing,
@@ -378,11 +378,11 @@ void main() {
       expect(find.text('Simpan Perubahan'), findsOneWidget);
 
       // Enter new name and bio
-      final nameField = find.widgetWithText(TextField, 'Kreator Stiker');
+      final nameField = find.widgetWithText(TextField, 'Your Name');
       expect(nameField, findsOneWidget);
       await tester.enterText(nameField, 'Sticko Artist');
 
-      final bioField = find.widgetWithText(TextField, 'Penyimpanan Lokal Aktif');
+      final bioField = find.widgetWithText(TextField, 'Your Bio');
       expect(bioField, findsOneWidget);
       await tester.enterText(bioField, 'Bikin stiker keren tiap hari 🚀');
 
