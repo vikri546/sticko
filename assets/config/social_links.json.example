@@ -1,0 +1,10 @@
+{
+  "_comment": "Salin file ini menjadi social_links.json dan isi dengan tautan sosial media Anda. File social_links.json otomatis diabaikan oleh Git (.gitignore) sehingga privasi tetap terlindungi.",
+  "instagramUrl": "",
+  "facebookUrl": "",
+  "tiktokUrl": "",
+  "twitterUrl": "",
+  "linkedinUrl": "",
+  "supportMeUrl": ""
+}
+

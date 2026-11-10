@@ -1,19 +1,18 @@
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'package:sticker_flutter/config/social_links.dart';
 import 'package:sticker_flutter/services/app_update_notification_service.dart';
-import 'package:sticker_flutter/services/app_update_service.dart';
 import 'package:sticker_flutter/services/google_analytics_service.dart';
 import 'package:sticker_flutter/ui/screens/home_screen.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  await SocialLinks.load();
   await GoogleAnalyticsService().initialize();
   GoogleAnalyticsService().logAppOpen();
 
   // Initialize status bar notification channel strictly for APK updates
-  // and run real-time background check
-  AppUpdateNotificationService().initialize();
-  AppUpdateService.checkForUpdateInBackground();
+  await AppUpdateNotificationService().initialize();
 
   runApp(const StickerApp());
 }

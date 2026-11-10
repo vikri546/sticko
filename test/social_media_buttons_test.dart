@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:sticker_flutter/config/social_links.dart';
 import 'package:sticker_flutter/ui/screens/account_screen.dart';
 import 'package:sticker_flutter/ui/widgets/app_notification.dart';
 import 'package:sticker_flutter/ui/widgets/social_media_buttons.dart';
@@ -71,6 +72,7 @@ void main() {
     testWidgets('Replaces old footer text with SocialMediaButtonsRow in AccountScreen', (
       WidgetTester tester,
     ) async {
+      SocialLinks.resetForTesting();
       tester.view.physicalSize = const Size(800, 1600);
       tester.view.devicePixelRatio = 1.0;
       addTearDown(() => tester.view.resetPhysicalSize());
@@ -82,20 +84,21 @@ void main() {
       );
       await tester.pump();
 
-      // Verify old text is completely removed
+      // Verify old footer string is removed
       expect(find.text('Sticker Maker v1.0.0+1 • Made with Flutter'), findsNothing);
-      expect(find.textContaining('Made with Flutter'), findsNothing);
 
-      // Verify SocialMediaButtonsRow is present
+      // Verify SocialMediaButtonsRow, "Support Me" button, and Copyright text are present
       expect(find.byType(SocialMediaButtonsRow), findsOneWidget);
       expect(find.byTooltip('Instagram'), findsOneWidget);
       expect(find.byTooltip('Facebook'), findsOneWidget);
       expect(find.byTooltip('TikTok'), findsOneWidget);
       expect(find.byTooltip('Twitter / X'), findsOneWidget);
       expect(find.byTooltip('LinkedIn'), findsOneWidget);
+      expect(find.text('Support Me'), findsOneWidget);
+      expect(find.textContaining('Sticko. All rights reserved.'), findsOneWidget);
 
-      // Tapping an empty social link displays feedback notification
-      await tester.tap(find.byTooltip('Instagram'));
+      // Tapping an empty social / support link displays feedback notification
+      await tester.tap(find.text('Support Me'));
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 300));
 
@@ -105,7 +108,7 @@ void main() {
       await tester.tap(find.byType(NotificationIconButton));
       await tester.pumpAndSettle();
 
-      expect(find.text('Tautan Instagram belum diisi.'), findsOneWidget);
+      expect(find.text('Tautan Support Me belum diisi.'), findsOneWidget);
 
       // Clean up overlay timer
       AppNotification.dismiss();

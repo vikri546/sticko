@@ -7,6 +7,7 @@ class ForceUpdateDialog extends StatefulWidget {
   final String title;
   final String message;
   final String updateUrl;
+  final String targetVersion;
   final VoidCallback? onUpdatePressed;
 
   const ForceUpdateDialog({
@@ -14,6 +15,7 @@ class ForceUpdateDialog extends StatefulWidget {
     this.title = 'New version available',
     this.message = 'There are new features available,\nplease update your app',
     this.updateUrl = AppUpdateService.defaultStoreUrl,
+    this.targetVersion = AppUpdateService.defaultCurrentVersion,
     this.onUpdatePressed,
   });
 
@@ -41,6 +43,7 @@ class _ForceUpdateDialogState extends State<ForceUpdateDialog> {
     try {
       await AppUpdateService.downloadAndInstallApk(
         apkUrl: widget.updateUrl,
+        targetVersion: widget.targetVersion,
         onProgress: (progress) {
           if (mounted) {
             setState(() {

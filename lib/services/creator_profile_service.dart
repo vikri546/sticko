@@ -9,8 +9,8 @@ class CreatorProfileService extends ChangeNotifier {
   factory CreatorProfileService() => _instance;
   CreatorProfileService._internal();
 
-  String _name = 'Kreator Stiker';
-  String _bio = 'Penyimpanan Lokal Aktif';
+  String _name = 'Your Name';
+  String _bio = 'Your Bio';
   String? _avatarPath;
   String? _website;
   bool _isLoaded = false;
@@ -31,8 +31,8 @@ class CreatorProfileService extends ChangeNotifier {
     String? website,
     String? customDir,
   }) {
-    _name = name ?? 'Kreator Stiker';
-    _bio = bio ?? 'Penyimpanan Lokal Aktif';
+    _name = name ?? 'Your Name';
+    _bio = bio ?? 'Your Bio';
     _avatarPath = avatarPath;
     _website = website;
     _isLoaded = true;
@@ -58,10 +58,10 @@ class CreatorProfileService extends ChangeNotifier {
         final data = jsonDecode(content) as Map<String, dynamic>;
         _name = (data['name'] as String?)?.trim().isNotEmpty == true
             ? data['name'] as String
-            : 'Kreator Stiker';
+            : 'Your Name';
         _bio = (data['bio'] as String?)?.trim().isNotEmpty == true
             ? data['bio'] as String
-            : 'Penyimpanan Lokal Aktif';
+            : 'Your Bio';
         _avatarPath = data['avatarPath'] as String?;
         _website = data['website'] as String?;
       }
@@ -80,12 +80,12 @@ class CreatorProfileService extends ChangeNotifier {
     String? avatarPath,
     String? website,
   }) async {
-    _name = name.trim().isEmpty ? 'Kreator Stiker' : name.trim();
+    _name = name.trim().isEmpty ? 'Your Name' : name.trim();
     final trimmedBio = bio.trim();
     // Enforce max 32 characters as required
     _bio = trimmedBio.length > 32
         ? trimmedBio.substring(0, 32)
-        : (trimmedBio.isEmpty ? 'Penyimpanan Lokal Aktif' : trimmedBio);
+        : (trimmedBio.isEmpty ? 'Your Bio' : trimmedBio);
     _avatarPath = avatarPath;
     _website = (website != null && website.trim().isNotEmpty) ? website.trim() : null;
 

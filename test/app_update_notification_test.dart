@@ -1,9 +1,11 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:sticker_flutter/services/app_update_notification_service.dart';
 import 'package:sticker_flutter/services/app_update_service.dart';
+import 'package:sticker_flutter/ui/screens/home_screen.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -12,10 +14,12 @@ void main() {
   setUp(() {
     notificationService = AppUpdateNotificationService();
     notificationService.resetForTesting();
+    AppUpdateService.resetForTesting();
   });
 
   tearDown(() {
     notificationService.resetForTesting();
+    AppUpdateService.resetForTesting();
   });
 
   group('AppUpdateNotificationService Status Bar Notification Tests', () {
@@ -142,7 +146,7 @@ void main() {
       );
 
       final info = await AppUpdateService.checkRemoteUpdate(
-        currentVersion: '1.0.2',
+        currentVersion: '1.0.3',
         checkUrl: 'https://example.com/version.json',
         customClient: mockClient,
         showStatusBarNotification: true,
@@ -173,7 +177,7 @@ void main() {
       );
 
       final info = await AppUpdateService.checkRemoteUpdate(
-        currentVersion: '1.0.2',
+        currentVersion: '1.0.3',
         checkUrl: 'https://example.com/version.json',
         customClient: mockClient,
         showStatusBarNotification: true,
@@ -203,6 +207,77 @@ void main() {
 
       expect(recordedProgress, isNotEmpty);
       expect(recordedProgress.last, equals(100));
+    });
+
+    test('normalizeApkUrl and isDirectApkUrl handle GitHub Releases URLs properly', () {
+      expect(
+        AppUpdateService.normalizeApkUrl('https://github.com/vikri546/sticko/releases/latest'),
+        equals('https://github.com/vikri546/sticko/releases/latest/download/app-release.apk'),
+      );
+      expect(
+        AppUpdateService.normalizeApkUrl('https://github.com/vikri546/sticko/releases/tag/v1.0.4'),
+        equals('https://github.com/vikri546/sticko/releases/download/v1.0.4/app-release.apk'),
+      );
+      expect(
+        AppUpdateService.isDirectApkUrl(
+          'https://github.com/vikri546/sticko/releases/latest/download/app-release.apk',
+        ),
+        isTrue,
+      );
+      expect(
+        AppUpdateService.isDirectApkUrl(
+          'https://github.com/vikri546/sticko/releases/download/v1.0.4/sticko.apk?raw=true',
+        ),
+        isTrue,
+      );
+      expect(
+        AppUpdateService.isDirectApkUrl('https://example.com/test.apk.test'),
+        isFalse,
+      );
+    });
+
+    test('version.json matches current app version and uses direct APK URL', () {
+      final versionFile = File('version.json');
+      expect(versionFile.existsSync(), isTrue);
+      final data = jsonDecode(versionFile.readAsStringSync()) as Map<String, dynamic>;
+      expect(data['latest_version'], equals(AppUpdateService.defaultCurrentVersion));
+      expect(AppUpdateService.isDirectApkUrl(data['apk_url'].toString()), isTrue);
+    });
+
+    testWidgets('HomeScreen automatically displays status bar notification and update dialog on startup', (
+      WidgetTester tester,
+    ) async {
+      bool statusBarNotified = false;
+      notificationService.setMockHandler((method, arguments) async {
+        if (method == 'showUpdateNotification') {
+          statusBarNotified = true;
+        }
+        return null;
+      });
+
+      AppUpdateService.mockUpdateChecker = () async => const AppUpdateInfo(
+            currentVersion: '1.0.3+4',
+            latestVersion: '1.0.4+5',
+            minRequiredVersion: '1.0.0',
+            updateUrl: 'https://example.com/sticko-update.apk.test',
+            title: 'Pembaruan Sticko Tersedia',
+            message: 'Versi terbaru telah tersedia!',
+          );
+
+      await tester.pumpWidget(const MaterialApp(home: HomeScreen()));
+      await tester.pump();
+      await tester.pump();
+
+      // Both status bar notification AND foreground dialog must appear automatically
+      expect(statusBarNotified, isTrue);
+      expect(find.text('Pembaruan Sticko Tersedia'), findsOneWidget);
+      expect(find.text('v1.0.3+4 → v1.0.4+5'), findsOneWidget);
+      expect(find.text('Perbarui Sekarang'), findsOneWidget);
+
+      await tester.tap(find.text('Nanti'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+      expect(find.text('Perbarui Sekarang'), findsNothing);
     });
   });
 }

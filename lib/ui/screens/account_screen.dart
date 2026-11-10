@@ -3,6 +3,8 @@ import 'dart:ui';
 import 'package:flutter/material.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'package:sticker_flutter/config/social_links.dart';
+import 'package:sticker_flutter/services/app_update_notification_service.dart';
 import 'package:sticker_flutter/services/app_update_service.dart';
 import 'package:sticker_flutter/services/creator_profile_service.dart';
 import 'package:sticker_flutter/services/sticker_pack_manager.dart';
@@ -34,13 +36,16 @@ class _AccountScreenState extends State<AccountScreen> {
   final _profileService = CreatorProfileService();
   bool _isCheckingUpdate = false;
   String _cacheSizeText = 'Menghitung...';
+  String _currentAppVersion = AppUpdateService.defaultCurrentVersion;
 
-  // Tautan Akun Media Sosial (Dikosongkan terlebih dahulu, siap diisi manual)
-  static const String instagramUrl = '';
-  static const String facebookUrl = '';
-  static const String tiktokUrl = '';
-  static const String twitterUrl = '';
-  static const String linkedinUrl = '';
+  // Tautan Akun Media Sosial & Dukungan dimuat secara aman dari SocialLinks
+  // (Data sensitif tersimpan di assets/config/social_links.json yang dilindungi .gitignore)
+  static String get instagramUrl => SocialLinks.instagramUrl;
+  static String get facebookUrl => SocialLinks.facebookUrl;
+  static String get tiktokUrl => SocialLinks.tiktokUrl;
+  static String get twitterUrl => SocialLinks.twitterUrl;
+  static String get linkedinUrl => SocialLinks.linkedinUrl;
+  static String get supportMeUrl => SocialLinks.supportMeUrl;
 
   Future<void> _openSocialLink(String url, String platformName) async {
     if (url.trim().isEmpty) {
@@ -56,10 +61,15 @@ class _AccountScreenState extends State<AccountScreen> {
     final uri = Uri.tryParse(url.trim());
     if (uri != null) {
       try {
+        bool launched = false;
         if (await canLaunchUrl(uri)) {
-          await launchUrl(uri, mode: LaunchMode.externalApplication);
-          return;
+          launched = await launchUrl(uri, mode: LaunchMode.externalApplication);
         }
+        if (!launched) {
+          // Fallback jika canLaunchUrl false atau externalApplication tidak didukung
+          launched = await launchUrl(uri, mode: LaunchMode.platformDefault);
+        }
+        if (launched) return;
       } catch (e) {
         debugPrint('Error launching $platformName link: $e');
       }
@@ -78,6 +88,14 @@ class _AccountScreenState extends State<AccountScreen> {
     super.initState();
     _calculateCacheSize();
     _profileService.loadProfile();
+    SocialLinks.load().then((_) {
+      if (mounted) setState(() {});
+    });
+    AppUpdateService.getCurrentAppVersion().then((ver) {
+      if (mounted && ver != _currentAppVersion) {
+        setState(() => _currentAppVersion = ver);
+      }
+    });
   }
 
   Future<void> _calculateCacheSize() async {
@@ -137,6 +155,7 @@ class _AccountScreenState extends State<AccountScreen> {
 
   Future<void> _checkForUpdate() async {
     setState(() => _isCheckingUpdate = true);
+    await AppUpdateNotificationService().ensurePermissionGranted();
     final updateInfo = await AppUpdateService.checkRemoteUpdate(
       showStatusBarNotification: true,
     );
@@ -145,44 +164,7 @@ class _AccountScreenState extends State<AccountScreen> {
     setState(() => _isCheckingUpdate = false);
 
     if (updateInfo != null && updateInfo.hasUpdate) {
-      showDialog(
-        context: context,
-        builder: (ctx) => AlertDialog(
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(5)),
-          title: const Row(
-            children: [
-              Icon(Icons.system_update_rounded, color: Color(0xFF128C7E), size: 28),
-              SizedBox(width: 12),
-              Text('Pembaruan Tersedia', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-            ],
-          ),
-          content: Text(
-            'Versi ${updateInfo.latestVersion} telah tersedia!\n\nNotifikasi telah dikirimkan ke bilah status handphone Anda. Buka bilah status atau ketuk tombol di bawah untuk mengunduh.',
-            style: const TextStyle(fontSize: 14, height: 1.45),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.of(ctx).pop(),
-              child: const Text('Nanti'),
-            ),
-            FilledButton(
-              style: FilledButton.styleFrom(
-                backgroundColor: const Color(0xFF128C7E),
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(5)),
-              ),
-              onPressed: () {
-                Navigator.of(ctx).pop();
-                AppUpdateService.downloadAndInstallApk(
-                  apkUrl: updateInfo.updateUrl,
-                  onProgress: (_) {},
-                  targetVersion: updateInfo.latestVersion,
-                );
-              },
-              child: const Text('Perbarui Sekarang'),
-            ),
-          ],
-        ),
-      );
+      await AppUpdateService.showUpdateDialog(context, updateInfo);
     } else {
       showDialog(
         context: context,
@@ -196,7 +178,7 @@ class _AccountScreenState extends State<AccountScreen> {
             ],
           ),
           content: Text(
-            'Aplikasi Sticko Anda sudah menggunakan versi paling mutakhir (v${AppUpdateService.defaultCurrentVersion}).\n\nFitur pemeriksaan pembaruan dan notifikasi bilah status aktif secara otomatis.',
+            'Aplikasi Sticko Anda sudah menggunakan versi paling mutakhir (v$_currentAppVersion).\n\nFitur pemeriksaan pembaruan dan notifikasi bilah status aktif secara otomatis.',
             style: const TextStyle(fontSize: 14, height: 1.45),
           ),
           actions: [
@@ -440,7 +422,7 @@ class _AccountScreenState extends State<AccountScreen> {
                   Divider(height: 1, indent: 20, endIndent: 20, color: isDark ? const Color(0x24FFFFFF) : const Color(0x1F000000)),
                   _SettingsListTile(
                     title: 'Periksa Pembaruan APK',
-                    subtitle: 'Versi saat ini: ${AppUpdateService.defaultCurrentVersion} (Terbaru)',
+                    subtitle: 'Versi saat ini: $_currentAppVersion (Terbaru)',
                     trailingWidget: _isCheckingUpdate
                         ? const SizedBox(
                             width: 18,
@@ -475,7 +457,58 @@ class _AccountScreenState extends State<AccountScreen> {
                 onTapTwitter: () => _openSocialLink(twitterUrl, 'Twitter / X'),
                 onTapLinkedIn: () => _openSocialLink(linkedinUrl, 'LinkedIn'),
               ),
-              const SizedBox(height: 18),
+              const SizedBox(height: 10),
+
+              // "Support Me" Underlined Text Button
+              Center(
+                child: TextButton(
+                  onPressed: () => _openSocialLink(supportMeUrl, 'Support Me'),
+                  style: TextButton.styleFrom(
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                    minimumSize: Size.zero,
+                    tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                  ),
+                  child: Text(
+                    'Support Me',
+                    style: GoogleFonts.plusJakartaSans(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w600,
+                      color: isDark ? const Color(0xFFF09A06) : const Color(0xFFD97706),
+                      decoration: TextDecoration.underline,
+                      decorationColor: isDark ? const Color(0xFFF09A06) : const Color(0xFFD97706),
+                    ),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 12),
+
+              // Copyright Text
+              Center(
+                child: Text(
+                  '© ${DateTime.now().year} Sticko. All rights reserved.',
+                  style: GoogleFonts.plusJakartaSans(
+                    fontSize: 11.5,
+                    fontWeight: FontWeight.w400,
+                    color: isDark ? const Color(0xFF8E8E93) : const Color(0xFF636366),
+                    letterSpacing: 0.2,
+                  ),
+                ),
+              ),
+              const SizedBox(height: 8),
+
+              Center(
+                child: Text(
+                  'Made with Flutter',
+                  style: GoogleFonts.plusJakartaSans(
+                    fontSize: 11.5,
+                    fontWeight: FontWeight.w400,
+                    color: isDark ? const Color(0xFF8E8E93) : const Color(0xFF636366),
+                    letterSpacing: 0.2,
+                  ),
+                ),
+              ),
+              const SizedBox(height: 24),
+
             ],
           ),
         ),

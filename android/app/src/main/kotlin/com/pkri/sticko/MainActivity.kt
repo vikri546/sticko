@@ -39,6 +39,8 @@ class MainActivity : FlutterActivity() {
     }
 
     private var pendingAddResult: MethodChannel.Result? = null
+    private var updateNotificationChannel: MethodChannel? = null
+    private var pendingNotificationPayload: Map<String, String>? = null
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
@@ -46,12 +48,29 @@ class MainActivity : FlutterActivity() {
         // Initialize status bar notification channel for APK updates
         createNotificationChannel()
 
+        // Capture cold-start notification tap payload if launched from status bar
+        extractUpdatePayloadFromIntent(intent)?.let {
+            pendingNotificationPayload = it
+        }
+
         // Handle APK update status bar notifications
-        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, NOTIFICATION_CHANNEL).setMethodCallHandler { call, result ->
+        val notifChannel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, NOTIFICATION_CHANNEL)
+        updateNotificationChannel = notifChannel
+        notifChannel.setMethodCallHandler { call, result ->
             when (call.method) {
                 "initNotificationChannel" -> {
                     createNotificationChannel()
                     result.success(true)
+                }
+
+                "getAppVersion" -> {
+                    result.success(getCurrentInstalledVersion())
+                }
+
+                "consumePendingNotificationAction" -> {
+                    val payload = pendingNotificationPayload
+                    pendingNotificationPayload = null
+                    result.success(payload)
                 }
 
                 "showUpdateNotification" -> {
@@ -480,6 +499,50 @@ class MainActivity : FlutterActivity() {
         }
     }
 
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        val payload = extractUpdatePayloadFromIntent(intent)
+        if (payload != null) {
+            val ch = updateNotificationChannel
+            if (ch != null) {
+                ch.invokeMethod("onNotificationTapped", payload)
+            } else {
+                pendingNotificationPayload = payload
+            }
+        }
+    }
+
+    private fun extractUpdatePayloadFromIntent(intent: Intent?): Map<String, String>? {
+        val action = intent?.getStringExtra("action") ?: return null
+        if (action != "SHOW_APP_UPDATE" && action != "INSTALL_APP_UPDATE") return null
+        val map = mutableMapOf("action" to action)
+        intent.getStringExtra("latest_version")?.let { map["version"] = it }
+        intent.getStringExtra("version")?.let { map["version"] = it }
+        intent.getStringExtra("download_url")?.let { map["downloadUrl"] = it }
+        intent.getStringExtra("apk_path")?.let { map["apkPath"] = it }
+        intent.getStringExtra("update_title")?.let { map["title"] = it }
+        intent.getStringExtra("update_body")?.let { map["body"] = it }
+        intent.removeExtra("action")
+        return map
+    }
+
+    private fun getCurrentInstalledVersion(): String {
+        return try {
+            val pInfo = packageManager.getPackageInfo(packageName, 0)
+            val vName = pInfo.versionName ?: "1.0.3"
+            val vCode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                pInfo.longVersionCode
+            } else {
+                @Suppress("DEPRECATION")
+                pInfo.versionCode.toLong()
+            }
+            "$vName+$vCode"
+        } catch (e: Exception) {
+            "1.0.3+4"
+        }
+    }
+
     private fun showUpdateNotification(title: String, body: String, version: String, downloadUrl: String) {
         val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         createNotificationChannel()
@@ -489,6 +552,8 @@ class MainActivity : FlutterActivity() {
             putExtra("action", "SHOW_APP_UPDATE")
             putExtra("latest_version", version)
             putExtra("download_url", downloadUrl)
+            putExtra("update_title", title)
+            putExtra("update_body", body)
         }
         val pendingIntent = PendingIntent.getActivity(
             this,
@@ -510,6 +575,7 @@ class MainActivity : FlutterActivity() {
 
         builder.setContentTitle(title)
             .setContentText(body)
+            .setStyle(Notification.BigTextStyle().bigText(body))
             .setSmallIcon(getUpdateIconRes())
             .setContentIntent(pendingIntent)
             .setAutoCancel(true)

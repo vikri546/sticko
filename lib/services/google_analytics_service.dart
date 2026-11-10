@@ -192,7 +192,7 @@ class GoogleAnalyticsService extends ChangeNotifier {
   /// Convenience helper: App open event.
   Future<bool> logAppOpen() async {
     return await logEvent(name: 'app_open', parameters: {
-      'app_version': '1.0.2',
+      'app_version': '1.0.3',
     });
   }
 

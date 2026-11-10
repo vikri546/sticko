@@ -2,6 +2,8 @@ import 'dart:io';
 import 'dart:ui';
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'package:sticker_flutter/services/app_update_notification_service.dart';
+import 'package:sticker_flutter/services/app_update_service.dart';
 import 'package:sticker_flutter/services/sticker_pack_manager.dart';
 import 'package:sticker_flutter/services/whatsapp_stickers_service.dart';
 import 'package:sticker_flutter/ui/screens/account_screen.dart';
@@ -27,12 +29,90 @@ class _HomeScreenState extends State<HomeScreen> {
     super.initState();
     _pageController = PageController(initialPage: _currentTabIndex);
     _manager.initialize();
+    AppUpdateNotificationService().setOnNotificationTapListener(
+      _handleNotificationAction,
+    );
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _checkUpdateOnStartup();
+    });
   }
 
   @override
   void dispose() {
+    AppUpdateNotificationService().setOnNotificationTapListener(null);
     _pageController.dispose();
     super.dispose();
+  }
+
+  Future<void> _checkUpdateOnStartup() async {
+    if (!mounted) return;
+
+    // 1. Handle cold-start launch triggered by tapping an APK update notification
+    final pendingAction =
+        await AppUpdateNotificationService().consumePendingNotificationAction();
+    if (pendingAction != null && mounted) {
+      await _handleNotificationAction(pendingAction);
+      return;
+    }
+
+    // 2. Ensure Android 13+ notification permission is granted so status bar alerts appear
+    await AppUpdateNotificationService().ensurePermissionGranted();
+
+    // 3. Check remote version.json / GitHub Releases, show status bar notification, and open dialog
+    final updateInfo = await AppUpdateService.checkRemoteUpdate(
+      showStatusBarNotification: true,
+    );
+    if (updateInfo != null && updateInfo.hasUpdate && mounted) {
+      await AppUpdateService.showUpdateDialog(context, updateInfo);
+    }
+  }
+
+  Future<void> _handleNotificationAction(Map<String, dynamic> payload) async {
+    if (!mounted) return;
+    final action = payload['action']?.toString() ?? '';
+
+    if (action == 'INSTALL_APP_UPDATE') {
+      final apkPath = payload['apkPath']?.toString() ?? '';
+      if (apkPath.isNotEmpty) {
+        await AppUpdateService.installApkFile(apkPath);
+        return;
+      }
+    }
+
+    if (action == 'SHOW_APP_UPDATE' || action == 'INSTALL_APP_UPDATE') {
+      final currentVer = await AppUpdateService.getCurrentAppVersion();
+      final latestVer = payload['version']?.toString().trim() ?? '';
+      final downloadUrl = payload['downloadUrl']?.toString().trim() ?? '';
+      final title = payload['title']?.toString();
+      final body = payload['body']?.toString();
+
+      if (latestVer.isNotEmpty) {
+        final info = AppUpdateInfo(
+          currentVersion: currentVer,
+          latestVersion: latestVer,
+          minRequiredVersion: '1.0.0',
+          updateUrl: downloadUrl.isNotEmpty
+              ? downloadUrl
+              : AppUpdateService.defaultDirectApkUrl,
+          title: (title != null && title.isNotEmpty)
+              ? title
+              : 'Pembaruan Sticko Tersedia',
+          message: (body != null && body.isNotEmpty)
+              ? body
+              : 'Versi terbaru ($latestVer) tersedia. Ketuk Perbarui Sekarang untuk memasang.',
+        );
+        if (mounted) {
+          await AppUpdateService.showUpdateDialog(context, info);
+        }
+      } else {
+        final remoteInfo = await AppUpdateService.checkRemoteUpdate(
+          showStatusBarNotification: false,
+        );
+        if (remoteInfo != null && remoteInfo.hasUpdate && mounted) {
+          await AppUpdateService.showUpdateDialog(context, remoteInfo);
+        }
+      }
+    }
   }
 
   void _openCreatePackDialog() async {
