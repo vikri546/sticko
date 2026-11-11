@@ -170,10 +170,10 @@ class StickerImageProcessor {
         bytes[5] == 0x61;
   }
 
-  /// Check if byte array is an animated WebP (contains ANIM chunk)
-  static bool isAnimatedWebp(Uint8List bytes) {
-    if (bytes.length < 32) return false;
-    final isWebpHeader = bytes[0] == 0x52 &&
+  /// Check if byte array has a valid WebP RIFF....WEBP header.
+  static bool isWebpFormat(Uint8List bytes) {
+    if (bytes.length < 12) return false;
+    return bytes[0] == 0x52 &&
         bytes[1] == 0x49 &&
         bytes[2] == 0x46 &&
         bytes[3] == 0x46 &&
@@ -181,7 +181,12 @@ class StickerImageProcessor {
         bytes[9] == 0x45 &&
         bytes[10] == 0x42 &&
         bytes[11] == 0x50;
-    if (!isWebpHeader) return false;
+  }
+
+  /// Check if byte array is an animated WebP (contains ANIM chunk)
+  static bool isAnimatedWebp(Uint8List bytes) {
+    if (bytes.length < 32) return false;
+    if (!isWebpFormat(bytes)) return false;
 
     final limit = bytes.length - 4;
     for (int i = 12; i < limit; i++) {
@@ -212,6 +217,21 @@ class StickerImageProcessor {
         bytes: sourceBytes,
         maxBytes: maxBytes > maxFileSizeBytes ? maxBytes : maxAnimatedFileSizeBytes,
       );
+    }
+    if (isWebpFormat(sourceBytes) &&
+        !isAnimatedWebp(sourceBytes) &&
+        sourceBytes.lengthInBytes <= maxBytes) {
+      final decoded = img.decodeImage(sourceBytes);
+      if (decoded != null &&
+          decoded.width == stickerDimension &&
+          decoded.height == stickerDimension) {
+        return ProcessedStickerResult(
+          webpBytes: sourceBytes,
+          width: stickerDimension,
+          height: stickerDimension,
+          byteSize: sourceBytes.lengthInBytes,
+        );
+      }
     }
     return await compute(_isolateProcessSticker, {
       'bytes': sourceBytes,
@@ -280,6 +300,21 @@ class StickerImageProcessor {
     final original = img.decodeImage(sourceBytes);
     if (original == null) {
       throw Exception('Format gambar tidak dapat dibaca oleh sistem.');
+    }
+
+    // If the input is already a compliant 512x512 static WebP within the size limit,
+    // preserve its exact format and bytes without re-shrinking or re-encoding.
+    if (isWebpFormat(sourceBytes) &&
+        !isAnimatedWebp(sourceBytes) &&
+        original.width == stickerDimension &&
+        original.height == stickerDimension &&
+        sourceBytes.lengthInBytes <= maxBytes) {
+      return ProcessedStickerResult(
+        webpBytes: sourceBytes,
+        width: stickerDimension,
+        height: stickerDimension,
+        byteSize: sourceBytes.lengthInBytes,
+      );
     }
 
     img.Image makeCanvas(img.Image src, int boxSize) {
@@ -408,6 +443,27 @@ class StickerImageProcessor {
           'bytes': bytes,
           'maxBytes': maxBytes,
         });
+      }
+
+      // If the input is already a compliant 512x512 animated WebP within duration and size limits,
+      // preserve its exact format and bytes without re-shrinking or re-encoding.
+      if (isAnimatedWebp(bytes) &&
+          decodedAnim.width == stickerDimension &&
+          decodedAnim.height == stickerDimension &&
+          bytes.lengthInBytes <= maxBytes) {
+        int totalDur = 0;
+        for (int i = 0; i < decodedAnim.numFrames; i++) {
+          final d = decodedAnim.frames[i].frameDuration;
+          totalDur += d > 10 ? d : 100;
+        }
+        if (totalDur <= maxDurationMs) {
+          return ProcessedStickerResult(
+            webpBytes: bytes,
+            width: stickerDimension,
+            height: stickerDimension,
+            byteSize: bytes.lengthInBytes,
+          );
+        }
       }
 
       // Calculate total duration and trim to max 10,000 ms (10 seconds)

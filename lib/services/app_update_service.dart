@@ -40,7 +40,7 @@ class AppUpdateInfo {
 /// Service that handles app version comparison, remote check, status bar notifications,
 /// and automatic APK download & installation.
 class AppUpdateService {
-  static const String defaultCurrentVersion = '1.0.4+5';
+  static const String defaultCurrentVersion = '1.0.5+6';
   static const String defaultStoreUrl =
       'https://play.google.com/store/apps/details?id=com.pkri.sticko';
   static const String defaultGitHubReleasesApi =

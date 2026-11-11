@@ -1,10 +1,12 @@
 import 'dart:io';
 import 'dart:ui';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:sticker_flutter/services/sticker_pack_manager.dart';
 import 'package:sticker_flutter/services/whatsapp_stickers_service.dart';
 import 'package:sticker_flutter/ui/screens/pack_detail_screen.dart';
+import 'package:sticker_flutter/ui/widgets/add_sticker_sheet.dart';
 import 'package:sticker_flutter/ui/widgets/create_pack_dialog.dart';
 
 /// Screen displaying Creator Content split into 3 tabs:
@@ -116,7 +118,7 @@ class _CreatorCollectionScreenState extends State<CreatorCollectionScreen>
     }
   }
 
-  void _showPackStickersModal(StickerPack pack) {
+  void _showPackStickersModal(StickerPack initialPack) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
 
     showModalBottomSheet(
@@ -124,187 +126,277 @@ class _CreatorCollectionScreenState extends State<CreatorCollectionScreen>
       isScrollControlled: true,
       backgroundColor: Colors.transparent,
       builder: (ctx) {
-        return Container(
-          height: MediaQuery.of(context).size.height * 0.72,
-          decoration: BoxDecoration(
-            color: isDark ? const Color(0xFF141E24) : Colors.white,
-            borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
-            boxShadow: const [
-              BoxShadow(
-                color: Colors.black45,
-                blurRadius: 20,
-                offset: Offset(0, -4),
-              ),
-            ],
-          ),
-          child: Column(
-            children: [
-              const SizedBox(height: 12),
-              // Drag Handle
-              Container(
-                width: 42,
-                height: 4.5,
-                decoration: BoxDecoration(
-                  color: isDark ? Colors.grey[700] : Colors.grey[300],
-                  borderRadius: BorderRadius.circular(3),
-                ),
-              ),
-              const SizedBox(height: 14),
+        return ListenableBuilder(
+          listenable: _manager,
+          builder: (context, _) {
+            final pack = _manager.getPack(initialPack.identifier) ?? initialPack;
 
-              // Header Info
-              Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 20),
-                child: Row(
-                  children: [
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            pack.name,
-                            style: GoogleFonts.plusJakartaSans(
-                              fontSize: 19,
-                              fontWeight: FontWeight.bold,
-                              color: isDark ? Colors.white : Colors.black87,
-                            ),
-                          ),
-                          const SizedBox(height: 2),
-                          Text(
-                            '${pack.stickers.length} Stiker • Kreator: ${pack.publisher}',
-                            style: GoogleFonts.plusJakartaSans(
-                              fontSize: 12.5,
-                              color: isDark ? Colors.grey[400] : Colors.grey[600],
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                    IconButton(
-                      icon: const Icon(Icons.close_rounded),
-                      onPressed: () => Navigator.of(ctx).pop(),
-                    ),
-                  ],
-                ),
+            return Container(
+              height: MediaQuery.of(context).size.height * 0.72,
+              decoration: BoxDecoration(
+                color: isDark ? const Color(0xFF141E24) : Colors.white,
+                borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
+                boxShadow: const [
+                  BoxShadow(
+                    color: Colors.black45,
+                    blurRadius: 20,
+                    offset: Offset(0, -4),
+                  ),
+                ],
               ),
-              const Divider(height: 20),
+              child: Column(
+                children: [
+                  const SizedBox(height: 12),
+                  // Drag Handle
+                  Container(
+                    width: 42,
+                    height: 4.5,
+                    decoration: BoxDecoration(
+                      color: isDark ? Colors.grey[700] : Colors.grey[300],
+                      borderRadius: BorderRadius.circular(3),
+                    ),
+                  ),
+                  const SizedBox(height: 14),
 
-              // Stickers Grid
-              Expanded(
-                child: pack.stickers.isEmpty
-                    ? Center(
-                        child: Text(
-                          'Belum ada stiker di paket ini',
-                          style: GoogleFonts.plusJakartaSans(
-                            color: isDark ? Colors.grey[400] : Colors.grey[600],
+                  // Header Info
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 20),
+                    child: Row(
+                      children: [
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                pack.name,
+                                style: GoogleFonts.plusJakartaSans(
+                                  fontSize: 19,
+                                  fontWeight: FontWeight.bold,
+                                  color: isDark ? Colors.white : Colors.black87,
+                                ),
+                              ),
+                              const SizedBox(height: 2),
+                              Text(
+                                '${pack.stickers.length} Stiker • Kreator: ${pack.publisher}',
+                                style: GoogleFonts.plusJakartaSans(
+                                  fontSize: 12.5,
+                                  color: isDark ? Colors.grey[400] : Colors.grey[600],
+                                ),
+                              ),
+                            ],
                           ),
                         ),
-                      )
-                    : GridView.builder(
-                        padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 8),
-                        gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                          crossAxisCount: 4,
-                          crossAxisSpacing: 10,
-                          mainAxisSpacing: 10,
-                          childAspectRatio: 1.0,
+                        IconButton(
+                          icon: const Icon(Icons.close_rounded),
+                          onPressed: () => Navigator.of(ctx).pop(),
                         ),
-                        itemCount: pack.stickers.length,
-                        itemBuilder: (context, idx) {
-                          final sticker = pack.stickers[idx];
-                          final filePath = _manager.getStickerFilePath(
-                            pack.identifier,
-                            sticker.imageFileName,
-                          );
-                          final file = filePath != null ? File(filePath) : null;
+                      ],
+                    ),
+                  ),
+                  const Divider(height: 20),
 
-                          return Material(
-                            color: Colors.transparent,
-                            child: InkWell(
-                              borderRadius: BorderRadius.circular(8),
-                              onTap: () {
-                                _showStickerPreviewModal(
-                                  sticker: sticker,
-                                  pack: pack,
-                                  filePath: filePath,
-                                );
-                              },
-                              child: Stack(
-                                children: [
-                                  Center(
-                                    child: Padding(
-                                      padding: const EdgeInsets.all(4),
-                                      child: file != null && file.existsSync()
-                                          ? Image.file(
-                                              file,
-                                              fit: BoxFit.contain,
-                                              errorBuilder: (_, _, _) => const Icon(
-                                                Icons.broken_image_rounded,
-                                                color: Colors.grey,
-                                                size: 24,
-                                              ),
-                                            )
-                                          : const Icon(
-                                              Icons.image_outlined,
-                                              color: Colors.grey,
-                                              size: 24,
-                                            ),
-                                    ),
+                  // Stickers Grid (supports 3-second hold to drag and reorder)
+                  Expanded(
+                    child: pack.stickers.isEmpty
+                        ? Center(
+                            child: Text(
+                              'Belum ada stiker di paket ini',
+                              style: GoogleFonts.plusJakartaSans(
+                                color: isDark ? Colors.grey[400] : Colors.grey[600],
+                              ),
+                            ),
+                          )
+                        : GridView.builder(
+                            padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 8),
+                            gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                              crossAxisCount: 4,
+                              crossAxisSpacing: 10,
+                              mainAxisSpacing: 10,
+                              childAspectRatio: 1.0,
+                            ),
+                            itemCount: pack.stickers.length,
+                            itemBuilder: (context, idx) {
+                              final sticker = pack.stickers[idx];
+                              final filePath = _manager.getStickerFilePath(
+                                pack.identifier,
+                                sticker.imageFileName,
+                              );
+                              final file = filePath != null ? File(filePath) : null;
+
+                              Widget buildStickerCell({bool isHighlighted = false}) {
+                                return AnimatedContainer(
+                                  duration: const Duration(milliseconds: 160),
+                                  decoration: BoxDecoration(
+                                    color: isHighlighted
+                                        ? const Color(0xFFF09A06).withAlpha(35)
+                                        : Colors.transparent,
+                                    borderRadius: BorderRadius.circular(10),
+                                    border: isHighlighted
+                                        ? Border.all(
+                                            color: const Color(0xFFF09A06),
+                                            width: 2,
+                                          )
+                                        : null,
                                   ),
-                                  if (sticker.emojis.isNotEmpty)
-                                    Positioned(
-                                      bottom: 3,
-                                      right: 4,
-                                      child: Text(
-                                        sticker.emojis.first,
-                                        style: const TextStyle(fontSize: 10),
+                                  child: Material(
+                                    color: Colors.transparent,
+                                    child: InkWell(
+                                      borderRadius: BorderRadius.circular(8),
+                                      onTap: () {
+                                        _openEditStickerSheet(
+                                          sticker: sticker,
+                                          pack: pack,
+                                          filePath: filePath,
+                                        );
+                                      },
+                                      child: Stack(
+                                        children: [
+                                          Center(
+                                            child: Padding(
+                                              padding: const EdgeInsets.all(4),
+                                              child: file != null && file.existsSync()
+                                                  ? Image.file(
+                                                      file,
+                                                      fit: BoxFit.contain,
+                                                      errorBuilder: (_, _, _) => const Icon(
+                                                        Icons.broken_image_rounded,
+                                                        color: Colors.grey,
+                                                        size: 24,
+                                                      ),
+                                                    )
+                                                  : const Icon(
+                                                      Icons.image_outlined,
+                                                      color: Colors.grey,
+                                                      size: 24,
+                                                    ),
+                                            ),
+                                          ),
+                                          if (sticker.emojis.isNotEmpty)
+                                            Positioned(
+                                              bottom: 3,
+                                              right: 4,
+                                              child: Text(
+                                                sticker.emojis.first,
+                                                style: const TextStyle(fontSize: 10),
+                                              ),
+                                            ),
+                                        ],
                                       ),
                                     ),
-                                ],
-                              ),
+                                  ),
+                                );
+                              }
+
+                              return LayoutBuilder(
+                                builder: (context, constraints) {
+                                  final cellSize = constraints.biggest;
+
+                                  return DragTarget<int>(
+                                    key: ValueKey('modal_drag_target_${sticker.imageFileName}'),
+                                    onWillAcceptWithDetails: (details) => details.data != idx,
+                                    onAcceptWithDetails: (details) async {
+                                      await _manager.reorderStickerInPack(
+                                        packIdentifier: pack.identifier,
+                                        oldIndex: details.data,
+                                        newIndex: idx,
+                                      );
+                                    },
+                                    builder: (context, candidateData, rejectedData) {
+                                      final isHovered = candidateData.isNotEmpty;
+
+                                      return LongPressDraggable<int>(
+                                        key: ValueKey('modal_draggable_${sticker.imageFileName}'),
+                                        data: idx,
+                                        delay: PackDetailScreen.stickerDragHoldDuration,
+                                        hapticFeedbackOnStart: true,
+                                        onDragStarted: () {
+                                          HapticFeedback.mediumImpact();
+                                        },
+                                        feedback: Material(
+                                          color: Colors.transparent,
+                                          elevation: 10,
+                                          borderRadius: BorderRadius.circular(10),
+                                          child: Transform.scale(
+                                            scale: 1.08,
+                                            child: SizedBox(
+                                              width: cellSize.width,
+                                              height: cellSize.height,
+                                              child: buildStickerCell(isHighlighted: true),
+                                            ),
+                                          ),
+                                        ),
+                                        childWhenDragging: Opacity(
+                                          opacity: 0.35,
+                                          child: buildStickerCell(),
+                                        ),
+                                        child: buildStickerCell(isHighlighted: isHovered),
+                                      );
+                                    },
+                                  );
+                                },
+                              );
+                            },
+                          ),
+                  ),
+
+                  // Open Detail Action
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(18, 10, 18, 20),
+                    child: SizedBox(
+                      width: double.infinity,
+                      child: ElevatedButton.icon(
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: const Color(0xFFF09A06),
+                          foregroundColor: Colors.black,
+                          padding: const EdgeInsets.symmetric(vertical: 13),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                          elevation: 0,
+                        ),
+                        onPressed: () {
+                          Navigator.of(ctx).pop();
+                          Navigator.of(context).push(
+                            MaterialPageRoute(
+                              builder: (_) =>
+                                  PackDetailScreen(packIdentifier: pack.identifier),
                             ),
                           );
                         },
-                      ),
-              ),
-
-              // Open Detail Action
-              Padding(
-                padding: const EdgeInsets.fromLTRB(18, 10, 18, 20),
-                child: SizedBox(
-                  width: double.infinity,
-                  child: ElevatedButton.icon(
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: const Color(0xFFF09A06),
-                      foregroundColor: Colors.black,
-                      padding: const EdgeInsets.symmetric(vertical: 13),
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(12),
-                      ),
-                      elevation: 0,
-                    ),
-                    onPressed: () {
-                      Navigator.of(ctx).pop();
-                      Navigator.of(context).push(
-                        MaterialPageRoute(
-                          builder: (_) =>
-                              PackDetailScreen(packIdentifier: pack.identifier),
+                        icon: const Icon(Icons.edit_note_rounded, size: 20),
+                        label: Text(
+                          'Buka & Kelola Paket',
+                          style: GoogleFonts.plusJakartaSans(
+                            fontWeight: FontWeight.bold,
+                            fontSize: 14,
+                          ),
                         ),
-                      );
-                    },
-                    icon: const Icon(Icons.edit_note_rounded, size: 20),
-                    label: Text(
-                      'Buka & Kelola Paket',
-                      style: GoogleFonts.plusJakartaSans(
-                        fontWeight: FontWeight.bold,
-                        fontSize: 14,
                       ),
                     ),
                   ),
-                ),
+                ],
               ),
-            ],
-          ),
+            );
+          },
         );
       },
+    );
+  }
+
+  void _openEditStickerSheet({
+    required StickerItem sticker,
+    required StickerPack pack,
+    required String? filePath,
+  }) {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (_) => AddStickerSheet(
+        packIdentifier: pack.identifier,
+        editingSticker: sticker,
+        editingStickerFilePath: filePath,
+      ),
     );
   }
 

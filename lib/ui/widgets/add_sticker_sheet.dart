@@ -1,3 +1,4 @@
+import 'dart:io';
 import 'dart:typed_data';
 import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
@@ -7,6 +8,7 @@ import 'package:image_picker/image_picker.dart';
 import 'package:sticker_flutter/services/app_permission_service.dart';
 import 'package:sticker_flutter/services/sticker_image_processor.dart';
 import 'package:sticker_flutter/services/sticker_pack_manager.dart';
+import 'package:sticker_flutter/services/whatsapp_stickers_service.dart';
 import 'package:sticker_flutter/ui/widgets/app_notification.dart';
 
 enum _CropMode {
@@ -15,15 +17,19 @@ enum _CropMode {
   circle, // Masking bulat/lingkaran
 }
 
-/// Modal bottom sheet to pick single or multiple images, preview, tag with emojis, and add to pack.
+/// Modal bottom sheet to pick single or multiple images, preview, tag with emojis, and add or edit a sticker in a pack.
 class AddStickerSheet extends StatefulWidget {
   final String packIdentifier;
   final Uint8List? initialImageBytes;
+  final StickerItem? editingSticker;
+  final String? editingStickerFilePath;
 
   const AddStickerSheet({
     super.key,
     required this.packIdentifier,
     this.initialImageBytes,
+    this.editingSticker,
+    this.editingStickerFilePath,
   });
 
   @override
@@ -63,12 +69,35 @@ class _AddStickerSheetState extends State<AddStickerSheet> {
     '😀', '😂', '🔥', '❤️', '🎉', '👍', '😎', '🥳', '🙏', '😍', '🤩', '✨'
   ];
 
+  bool get _isEditingExisting => widget.editingSticker != null;
+
   @override
   void initState() {
     super.initState();
     _transformationController.addListener(_onTransformationChanged);
     if (widget.initialImageBytes != null) {
       _selectedImageBytes = widget.initialImageBytes;
+    } else if (widget.editingStickerFilePath != null) {
+      final file = File(widget.editingStickerFilePath!);
+      if (file.existsSync()) {
+        try {
+          _selectedImageBytes = file.readAsBytesSync();
+        } catch (e) {
+          debugPrint('Error reading existing sticker bytes: $e');
+        }
+      }
+    }
+
+    if (_selectedImageBytes != null) {
+      _isAnimatedSticker =
+          StickerImageProcessor.isAnimatedMedia(_selectedImageBytes!);
+    }
+
+    if (widget.editingSticker != null &&
+        widget.editingSticker!.emojis.isNotEmpty) {
+      _selectedEmojis
+        ..clear()
+        ..addAll(widget.editingSticker!.emojis.take(3));
     }
   }
 
@@ -458,9 +487,18 @@ class _AddStickerSheetState extends State<AddStickerSheet> {
     });
   }
 
+  bool get _hasUserEdits =>
+      _cropMode != _CropMode.fit ||
+      _quarterTurns != 0 ||
+      _isFlipped ||
+      (_currentScale - 1.0).abs() > 0.01 ||
+      !_transformationController.value.isIdentity() ||
+      _topTextController.text.trim().isNotEmpty ||
+      _bottomTextController.text.trim().isNotEmpty;
+
   Future<Uint8List?> _renderEditedStickerBytes() async {
     if (_selectedImageBytes == null) return null;
-    if (_isAnimatedSticker) return _selectedImageBytes;
+    if (_isAnimatedSticker || !_hasUserEdits) return _selectedImageBytes;
 
     try {
       final boundary = _previewKey.currentContext?.findRenderObject() as RenderRepaintBoundary?;
@@ -484,31 +522,209 @@ class _AddStickerSheetState extends State<AddStickerSheet> {
     setState(() => _isProcessing = true);
     try {
       final imageBytesToSave = await _renderEditedStickerBytes() ?? _selectedImageBytes!;
-      await StickerPackManager().addStickerToPack(
-        packIdentifier: widget.packIdentifier,
-        imageBytes: imageBytesToSave,
-        emojis: _selectedEmojis,
-      );
-
-      if (mounted) {
-        Navigator.of(context).pop(true);
-        AppNotification.show(
-          context,
-          message: 'Stiker berhasil dibuat dan ditambahkan ke paket!',
-          isSuccess: true,
+      if (_isEditingExisting) {
+        await StickerPackManager().replaceStickerInPack(
+          packIdentifier: widget.packIdentifier,
+          oldFileName: widget.editingSticker!.imageFileName,
+          newImageBytes: imageBytesToSave,
+          newEmojis: List<String>.from(_selectedEmojis),
         );
+
+        if (mounted) {
+          Navigator.of(context).pop(true);
+          AppNotification.show(
+            context,
+            message: 'Perubahan stiker berhasil disimpan!',
+            isSuccess: true,
+          );
+        }
+      } else {
+        await StickerPackManager().addStickerToPack(
+          packIdentifier: widget.packIdentifier,
+          imageBytes: imageBytesToSave,
+          emojis: _selectedEmojis,
+        );
+
+        if (mounted) {
+          Navigator.of(context).pop(true);
+          AppNotification.show(
+            context,
+            message: 'Stiker berhasil dibuat dan ditambahkan ke paket!',
+            isSuccess: true,
+          );
+        }
       }
     } catch (e) {
       if (mounted) {
         AppNotification.show(
           context,
-          message: 'Gagal membuat stiker: $e',
+          message: _isEditingExisting
+              ? 'Gagal menyimpan perubahan stiker: $e'
+              : 'Gagal membuat stiker: $e',
           isSuccess: false,
         );
       }
     } finally {
       if (mounted) setState(() => _isProcessing = false);
     }
+  }
+
+  String _formatStickerDateTime(DateTime? dt) {
+    if (dt == null) return '-';
+    final local = dt.toLocal();
+    const months = [
+      'Jan',
+      'Feb',
+      'Mar',
+      'Apr',
+      'Mei',
+      'Jun',
+      'Jul',
+      'Agu',
+      'Sep',
+      'Okt',
+      'Nov',
+      'Des',
+    ];
+    final day = local.day.toString().padLeft(2, '0');
+    final month = months[local.month - 1];
+    final year = local.year;
+    final hour = local.hour.toString().padLeft(2, '0');
+    final minute = local.minute.toString().padLeft(2, '0');
+    final second = local.second.toString().padLeft(2, '0');
+    return '$day $month $year, $hour:$minute:$second';
+  }
+
+  void _showStickerInfoDialog() {
+    final sticker = widget.editingSticker;
+    final filePath = widget.editingStickerFilePath;
+    final file = filePath != null ? File(filePath) : null;
+    final fileExists = file != null && file.existsSync();
+
+    final byteSize = fileExists
+        ? file.lengthSync()
+        : (_selectedImageBytes?.lengthInBytes ?? 0);
+    final sizeKb = (byteSize / 1024).toStringAsFixed(2);
+
+    final bytes = _selectedImageBytes;
+    String formatLabel = 'WEBP (${_isAnimatedSticker ? "Animasi" : "Statis"} • 512 × 512 px)';
+    if (bytes != null) {
+      if (StickerImageProcessor.isWebpFormat(bytes)) {
+        formatLabel =
+            'WEBP (${StickerImageProcessor.isAnimatedWebp(bytes) ? "Animasi" : "Statis"} • 512 × 512 px)';
+      } else if (StickerImageProcessor.isAnimatedGif(bytes)) {
+        formatLabel = 'GIF (Animasi • 512 × 512 px)';
+      }
+    }
+
+    final createdAt = sticker?.resolveCreatedAt(filePath);
+    final updatedAt = sticker?.resolveUpdatedAt(filePath);
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        title: const Row(
+          children: [
+            Icon(Icons.info_outline_rounded, color: Color(0xFF25D366)),
+            SizedBox(width: 10),
+            Expanded(
+              child: Text(
+                'Informasi Stiker',
+                style: TextStyle(fontSize: 17, fontWeight: FontWeight.bold),
+              ),
+            ),
+          ],
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            _buildInfoDetailRow(
+              label: 'Format',
+              value: formatLabel,
+              isDark: isDark,
+            ),
+            const SizedBox(height: 10),
+            _buildInfoDetailRow(
+              label: 'Size',
+              value: '$sizeKb KB ($byteSize Bytes)',
+              isDark: isDark,
+            ),
+            const SizedBox(height: 10),
+            _buildInfoDetailRow(
+              label: 'Waktu Simpan',
+              value: _formatStickerDateTime(createdAt),
+              isDark: isDark,
+            ),
+            const SizedBox(height: 10),
+            _buildInfoDetailRow(
+              label: 'Waktu Perubahan',
+              value: _formatStickerDateTime(updatedAt),
+              isDark: isDark,
+            ),
+            if (sticker != null) ...[
+              const SizedBox(height: 10),
+              _buildInfoDetailRow(
+                label: 'Nama File',
+                value: sticker.imageFileName,
+                isDark: isDark,
+              ),
+            ],
+          ],
+        ),
+        actions: [
+          FilledButton(
+            style: FilledButton.styleFrom(
+              backgroundColor: const Color(0xFF25D366),
+              foregroundColor: Colors.white,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(12),
+              ),
+            ),
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: const Text('Tutup'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildInfoDetailRow({
+    required String label,
+    required String value,
+    required bool isDark,
+  }) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+      decoration: BoxDecoration(
+        color: isDark ? const Color(0xFF1F2C34) : const Color(0xFFF4F6F8),
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            label,
+            style: TextStyle(
+              fontSize: 11.5,
+              fontWeight: FontWeight.w600,
+              color: isDark ? Colors.grey[400] : Colors.grey[600],
+            ),
+          ),
+          const SizedBox(height: 3),
+          Text(
+            value,
+            style: TextStyle(
+              fontSize: 13.5,
+              fontWeight: FontWeight.bold,
+              color: isDark ? Colors.white : Colors.black87,
+            ),
+          ),
+        ],
+      ),
+    );
   }
 
   Future<void> _saveMultipleStickers() async {
@@ -595,9 +811,11 @@ class _AddStickerSheetState extends State<AddStickerSheet> {
             Text(
               _multiSelectedBytes.isNotEmpty
                   ? 'Grup Stiker (${_multiSelectedBytes.length} ${_isPackAnimated ? "Animasi" : "Foto"})'
-                  : (_selectedImageBytes != null
-                      ? (_isAnimatedSticker ? 'Pratinjau Stiker Animasi' : 'Pratinjau Stiker')
-                      : (_isPackAnimated ? 'Tambah Stiker Animasi (Maks 10s)' : 'Tambah Stiker Baru')),
+                  : (_isEditingExisting
+                      ? (_isAnimatedSticker ? 'Edit Stiker Animasi' : 'Edit Stiker')
+                      : (_selectedImageBytes != null
+                          ? (_isAnimatedSticker ? 'Pratinjau Stiker Animasi' : 'Pratinjau Stiker')
+                          : (_isPackAnimated ? 'Tambah Stiker Animasi (Maks 10s)' : 'Tambah Stiker Baru'))),
               style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
               textAlign: TextAlign.center,
             ),
@@ -607,13 +825,15 @@ class _AddStickerSheetState extends State<AddStickerSheet> {
                   ? (_isPackAnimated
                       ? 'Animasi ini akan diproses otomatis ke format WebP sesuai standar WhatsApp (< 500 KB).'
                       : 'Foto-foto ini akan diproses otomatis ke format WebP sesuai standar WhatsApp (< 100 KB).')
-                  : (_selectedImageBytes != null
-                      ? (_isAnimatedSticker
-                          ? 'Stiker animasi WebP bergerak otomatis (maks 10 detik, < 500 KB). Pilih emoji lalu simpan.'
-                          : 'Sesuaikan emoji untuk stiker ini sebelum disimpan ke koleksi.')
-                      : (_isPackAnimated
-                          ? 'Pilih berkas GIF animasi atau video (maks 10 detik) untuk dijadikan stiker bergerak WhatsApp.'
-                          : 'Pilih foto dari galeri atau ambil foto baru dengan kamera untuk dijadikan stiker WhatsApp.')),
+                  : (_isEditingExisting
+                      ? 'Sesuaikan gambar, teks, atau emoji stiker ini lalu simpan perubahan.'
+                      : (_selectedImageBytes != null
+                          ? (_isAnimatedSticker
+                              ? 'Stiker animasi WebP bergerak otomatis (maks 10 detik, < 500 KB). Pilih emoji lalu simpan.'
+                              : 'Sesuaikan emoji untuk stiker ini sebelum disimpan ke koleksi.')
+                          : (_isPackAnimated
+                              ? 'Pilih berkas GIF animasi atau video (maks 10 detik) untuk dijadikan stiker bergerak WhatsApp.'
+                              : 'Pilih foto dari galeri atau ambil foto baru dengan kamera untuk dijadikan stiker WhatsApp.'))),
               style: const TextStyle(color: Colors.grey, fontSize: 13),
               textAlign: TextAlign.center,
             ),
@@ -842,9 +1062,13 @@ class _AddStickerSheetState extends State<AddStickerSheet> {
                         child: InkWell(
                           customBorder: const CircleBorder(),
                           onTap: () => setState(() {
-                            _selectedImageBytes = null;
-                            _isAnimatedSticker = false;
-                            _resetEditState();
+                            if (_isEditingExisting) {
+                              _resetEditState();
+                            } else {
+                              _selectedImageBytes = null;
+                              _isAnimatedSticker = false;
+                              _resetEditState();
+                            }
                           }),
                           child: const Padding(
                             padding: EdgeInsets.all(6.0),
@@ -863,7 +1087,7 @@ class _AddStickerSheetState extends State<AddStickerSheet> {
 
                 // Quick Tool Action Bar (Fit, Putar, Mirror, Teks, Reset)
                 Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+                  padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 6),
                   decoration: BoxDecoration(
                     color: isDark ? const Color(0xFF1F2C34) : const Color(0xFFF0F2F5),
                     borderRadius: BorderRadius.circular(16),
@@ -872,65 +1096,75 @@ class _AddStickerSheetState extends State<AddStickerSheet> {
                     mainAxisAlignment: MainAxisAlignment.spaceAround,
                     children: [
                       // Fit Mode Button (Fit Kotak, Fill Penuh, Bulat)
-                      _ToolIconButton(
-                        icon: _cropMode == _CropMode.fit
-                            ? Icons.fit_screen_rounded
-                            : (_cropMode == _CropMode.fill ? Icons.crop_free_rounded : Icons.circle_outlined),
-                        label: _cropMode == _CropMode.fit
-                            ? 'Fit'
-                            : (_cropMode == _CropMode.fill ? 'Penuh' : 'Bulat'),
-                        isActive: true,
-                        onTap: () {
-                          setState(() {
-                            if (_cropMode == _CropMode.fit) {
-                              _cropMode = _CropMode.fill;
-                            } else if (_cropMode == _CropMode.fill) {
-                              _cropMode = _CropMode.circle;
-                            } else {
-                              _cropMode = _CropMode.fit;
-                            }
-                          });
-                        },
+                      Expanded(
+                        child: _ToolIconButton(
+                          icon: _cropMode == _CropMode.fit
+                              ? Icons.fit_screen_rounded
+                              : (_cropMode == _CropMode.fill ? Icons.crop_free_rounded : Icons.circle_outlined),
+                          label: _cropMode == _CropMode.fit
+                              ? 'Fit'
+                              : (_cropMode == _CropMode.fill ? 'Penuh' : 'Bulat'),
+                          isActive: true,
+                          onTap: () {
+                            setState(() {
+                              if (_cropMode == _CropMode.fit) {
+                                _cropMode = _CropMode.fill;
+                              } else if (_cropMode == _CropMode.fill) {
+                                _cropMode = _CropMode.circle;
+                              } else {
+                                _cropMode = _CropMode.fit;
+                              }
+                            });
+                          },
+                        ),
                       ),
                       // Rotate Button (0° -> 90° -> 180° -> 270°)
-                      _ToolIconButton(
-                        icon: Icons.rotate_right_rounded,
-                        label: 'Putar ${_quarterTurns * 90}°',
-                        isActive: _quarterTurns > 0,
-                        onTap: () {
-                          setState(() {
-                            _quarterTurns = (_quarterTurns + 1) % 4;
-                          });
-                        },
+                      Expanded(
+                        child: _ToolIconButton(
+                          icon: Icons.rotate_right_rounded,
+                          label: 'Putar ${_quarterTurns * 90}°',
+                          isActive: _quarterTurns > 0,
+                          onTap: () {
+                            setState(() {
+                              _quarterTurns = (_quarterTurns + 1) % 4;
+                            });
+                          },
+                        ),
                       ),
                       // Mirror Button (Flip Horizontal)
-                      _ToolIconButton(
-                        icon: Icons.flip_rounded,
-                        label: 'Mirror',
-                        isActive: _isFlipped,
-                        onTap: () {
-                          setState(() {
-                            _isFlipped = !_isFlipped;
-                          });
-                        },
+                      Expanded(
+                        child: _ToolIconButton(
+                          icon: Icons.flip_rounded,
+                          label: 'Mirror',
+                          isActive: _isFlipped,
+                          onTap: () {
+                            setState(() {
+                              _isFlipped = !_isFlipped;
+                            });
+                          },
+                        ),
                       ),
                       // Text Editor Toggle Button
-                      _ToolIconButton(
-                        icon: Icons.text_fields_rounded,
-                        label: 'Teks',
-                        isActive: _showTextEditor || _topTextController.text.isNotEmpty || _bottomTextController.text.isNotEmpty,
-                        onTap: () {
-                          setState(() {
-                            _showTextEditor = !_showTextEditor;
-                          });
-                        },
+                      Expanded(
+                        child: _ToolIconButton(
+                          icon: Icons.text_fields_rounded,
+                          label: 'Teks',
+                          isActive: _showTextEditor || _topTextController.text.isNotEmpty || _bottomTextController.text.isNotEmpty,
+                          onTap: () {
+                            setState(() {
+                              _showTextEditor = !_showTextEditor;
+                            });
+                          },
+                        ),
                       ),
                       // Reset Transform Button
-                      _ToolIconButton(
-                        icon: Icons.restart_alt_rounded,
-                        label: 'Reset',
-                        isActive: false,
-                        onTap: _resetTransform,
+                      Expanded(
+                        child: _ToolIconButton(
+                          icon: Icons.restart_alt_rounded,
+                          label: 'Reset',
+                          isActive: false,
+                          onTap: _resetTransform,
+                        ),
                       ),
                     ],
                   ),
@@ -1135,10 +1369,15 @@ class _AddStickerSheetState extends State<AddStickerSheet> {
               Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
-                  const Text(
-                    'Pilih Emoji Stiker (Maksimal 3)',
-                    style: TextStyle(fontWeight: FontWeight.w600, fontSize: 14),
+                  const Expanded(
+                    child: Text(
+                      'Pilih Emoji Stiker (Maksimal 3)',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(fontWeight: FontWeight.w600, fontSize: 14),
+                    ),
                   ),
+                  const SizedBox(width: 8),
                   Text(
                     'Terpilih: ${_selectedEmojis.join(" ")}',
                     style: const TextStyle(fontSize: 14),
@@ -1151,34 +1390,115 @@ class _AddStickerSheetState extends State<AddStickerSheet> {
               _buildEmojiChips(),
               const SizedBox(height: 22),
 
-              // Save Single Button
-              FilledButton.icon(
-                onPressed: _isProcessing ? null : _saveSingleSticker,
-                style: FilledButton.styleFrom(
-                  backgroundColor: _isAnimatedSticker ? const Color(0xFF00A884) : const Color(0xFF25D366),
-                  foregroundColor: Colors.white,
-                  padding: const EdgeInsets.symmetric(vertical: 14),
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(14),
+              // Save Single Button (or Info + Save Changes when editing existing sticker)
+              if (_isEditingExisting)
+                Row(
+                  children: [
+                    OutlinedButton.icon(
+                      key: const Key('sticker_info_button'),
+                      onPressed: _isProcessing ? null : _showStickerInfoDialog,
+                      style: OutlinedButton.styleFrom(
+                        foregroundColor: isDark ? Colors.white : Colors.black87,
+                        side: BorderSide(
+                          color: isDark
+                              ? Colors.white.withAlpha(70)
+                              : Colors.black.withAlpha(50),
+                          width: 1.4,
+                        ),
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 16,
+                          vertical: 14,
+                        ),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(14),
+                        ),
+                      ),
+                      icon: const Icon(
+                        Icons.info_outline_rounded,
+                        size: 20,
+                        color: Color(0xFF25D366),
+                      ),
+                      label: const Text(
+                        'Informasi',
+                        style: TextStyle(
+                          fontSize: 14,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: FilledButton.icon(
+                        key: const Key('save_sticker_changes_button'),
+                        onPressed: _isProcessing ? null : _saveSingleSticker,
+                        style: FilledButton.styleFrom(
+                          backgroundColor: _isAnimatedSticker
+                              ? const Color(0xFF00A884)
+                              : const Color(0xFF25D366),
+                          foregroundColor: Colors.white,
+                          padding: const EdgeInsets.symmetric(vertical: 14),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(14),
+                          ),
+                        ),
+                        icon: _isProcessing
+                            ? const SizedBox(
+                                width: 18,
+                                height: 18,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                  color: Colors.white,
+                                ),
+                              )
+                            : const Icon(Icons.save_rounded),
+                        label: Text(
+                          _isProcessing ? 'Menyimpan...' : 'Simpan Perubahan',
+                          style: const TextStyle(
+                            fontSize: 15,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
+                )
+              else
+                FilledButton.icon(
+                  onPressed: _isProcessing ? null : _saveSingleSticker,
+                  style: FilledButton.styleFrom(
+                    backgroundColor: _isAnimatedSticker
+                        ? const Color(0xFF00A884)
+                        : const Color(0xFF25D366),
+                    foregroundColor: Colors.white,
+                    padding: const EdgeInsets.symmetric(vertical: 14),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(14),
+                    ),
+                  ),
+                  icon: _isProcessing
+                      ? const SizedBox(
+                          width: 18,
+                          height: 18,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                            color: Colors.white,
+                          ),
+                        )
+                      : Icon(_isAnimatedSticker
+                          ? Icons.motion_photos_on_rounded
+                          : Icons.check_circle_rounded),
+                  label: Text(
+                    _isProcessing
+                        ? 'Menyimpan...'
+                        : (_isAnimatedSticker
+                            ? 'Simpan Stiker Animasi ke Paket'
+                            : 'Simpan ke Koleksi Stiker'),
+                    style: const TextStyle(
+                      fontSize: 15,
+                      fontWeight: FontWeight.bold,
+                    ),
                   ),
                 ),
-                icon: _isProcessing
-                    ? const SizedBox(
-                        width: 18,
-                        height: 18,
-                        child: CircularProgressIndicator(
-                          strokeWidth: 2,
-                          color: Colors.white,
-                        ),
-                      )
-                    : Icon(_isAnimatedSticker ? Icons.motion_photos_on_rounded : Icons.check_circle_rounded),
-                label: Text(
-                  _isProcessing
-                      ? 'Menyimpan...'
-                      : (_isAnimatedSticker ? 'Simpan Stiker Animasi ke Paket' : 'Simpan ke Koleksi Stiker'),
-                  style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold),
-                ),
-              ),
             ]
             // 3. Multi-Image (Group) Selection Preview State
             else if (_multiSelectedBytes.isNotEmpty) ...[
@@ -1592,6 +1912,9 @@ class _ToolIconButton extends StatelessWidget {
             const SizedBox(height: 4),
             Text(
               label,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              textAlign: TextAlign.center,
               style: TextStyle(
                 fontSize: 10.5,
                 fontWeight: isActive ? FontWeight.bold : FontWeight.w500,

@@ -7,12 +7,18 @@ class StickerGridTile extends StatelessWidget {
   final StickerItem sticker;
   final String? filePath;
   final VoidCallback onDelete;
+  final VoidCallback? onTap;
+  final bool isDragTargetHighlighted;
+  final bool showDeleteButton;
 
   const StickerGridTile({
     super.key,
     required this.sticker,
     required this.filePath,
     required this.onDelete,
+    this.onTap,
+    this.isDragTargetHighlighted = false,
+    this.showDeleteButton = true,
   });
 
   @override
@@ -22,18 +28,25 @@ class StickerGridTile extends StatelessWidget {
     final fileBytes = fileExists ? file.lengthSync() : 0;
     final fileKb = (fileBytes / 1024).toStringAsFixed(0);
 
-    return Container(
+    return AnimatedContainer(
+      duration: const Duration(milliseconds: 180),
       decoration: BoxDecoration(
-        color: Theme.of(context).cardColor,
+        color: isDragTargetHighlighted
+            ? const Color(0xFF25D366).withAlpha(30)
+            : Theme.of(context).cardColor,
         borderRadius: BorderRadius.circular(16),
         border: Border.all(
-          color: Theme.of(context).dividerColor.withAlpha(40),
-          width: 1.2,
+          color: isDragTargetHighlighted
+              ? const Color(0xFF25D366)
+              : Theme.of(context).dividerColor.withAlpha(40),
+          width: isDragTargetHighlighted ? 2.4 : 1.2,
         ),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withAlpha(10),
-            blurRadius: 8,
+            color: isDragTargetHighlighted
+                ? const Color(0xFF25D366).withAlpha(60)
+                : Colors.black.withAlpha(10),
+            blurRadius: isDragTargetHighlighted ? 12 : 8,
             offset: const Offset(0, 3),
           ),
         ],
@@ -85,28 +98,6 @@ class StickerGridTile extends StatelessWidget {
               ),
             ),
 
-          // Delete Button (top right)
-          Positioned(
-            top: 4,
-            right: 4,
-            child: Material(
-              color: Colors.black.withAlpha(120),
-              shape: const CircleBorder(),
-              child: InkWell(
-                customBorder: const CircleBorder(),
-                onTap: () => _confirmDelete(context),
-                child: const Padding(
-                  padding: EdgeInsets.all(5.0),
-                  child: Icon(
-                    Icons.close_rounded,
-                    size: 14,
-                    color: Colors.white,
-                  ),
-                ),
-              ),
-            ),
-          ),
-
           // Emoji Badge (bottom left)
           if (sticker.emojis.isNotEmpty)
             Positioned(
@@ -121,6 +112,42 @@ class StickerGridTile extends StatelessWidget {
                 child: Text(
                   sticker.emojis.join(' '),
                   style: const TextStyle(fontSize: 11),
+                ),
+              ),
+            ),
+
+          // Single-tap handler to open sticker editor
+          if (onTap != null)
+            Positioned.fill(
+              child: Material(
+                color: Colors.transparent,
+                child: InkWell(
+                  key: ValueKey('sticker_tile_tap_${sticker.imageFileName}'),
+                  borderRadius: BorderRadius.circular(16),
+                  onTap: onTap,
+                ),
+              ),
+            ),
+
+          // Delete Button (top right - placed above tap layer so it remains independently clickable)
+          if (showDeleteButton)
+            Positioned(
+              top: 4,
+              right: 4,
+              child: Material(
+                color: Colors.black.withAlpha(120),
+                shape: const CircleBorder(),
+                child: InkWell(
+                  customBorder: const CircleBorder(),
+                  onTap: () => _confirmDelete(context),
+                  child: const Padding(
+                    padding: EdgeInsets.all(5.0),
+                    child: Icon(
+                      Icons.close_rounded,
+                      size: 14,
+                      color: Colors.white,
+                    ),
+                  ),
                 ),
               ),
             ),

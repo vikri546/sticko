@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:image/image.dart' as img;
+import 'package:sticker_flutter/services/duplicate_stickers_service.dart';
 import 'package:sticker_flutter/services/sticker_pack_manager.dart';
 import 'package:sticker_flutter/services/whatsapp_stickers_service.dart';
 import 'package:sticker_flutter/ui/screens/home_screen.dart';
@@ -279,5 +280,246 @@ void main() {
 
     expect(cancelToastCount, equals(1));
     expect(systemPopCount, equals(1));
+  });
+
+  testWidgets(
+      'Holding a sticker for 1.5 seconds in PackDetailScreen activates drag-and-drop and reorders sticker position without altering sticker format or duplicate detection',
+      (WidgetTester tester) async {
+    tester.view.physicalSize = const Size(430, 932);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(() => tester.view.resetPhysicalSize());
+
+    expect(
+      PackDetailScreen.stickerDragHoldDuration,
+      equals(const Duration(milliseconds: 1500)),
+    );
+
+    const packId = 'pack_reorder_test';
+    final packDir = Directory('${tempDir.path}/$packId')..createSync(recursive: true);
+
+    final trayImg = img.Image(width: 96, height: 96);
+    img.fill(trayImg, color: img.ColorRgba8(18, 140, 126, 255));
+    File('${packDir.path}/tray.png').writeAsBytesSync(img.encodePng(trayImg));
+
+    final stickerImg = img.Image(width: 512, height: 512);
+    img.fill(stickerImg, color: img.ColorRgba8(37, 211, 102, 255));
+    final webpBytes = img.encodeWebP(stickerImg);
+
+    final stickerItems = <StickerItem>[
+      const StickerItem(imageFileName: 'sticker_1.webp', emojis: ['1️⃣']),
+      const StickerItem(imageFileName: 'sticker_2.webp', emojis: ['2️⃣']),
+      const StickerItem(imageFileName: 'sticker_3.webp', emojis: ['3️⃣']),
+    ];
+    for (final item in stickerItems) {
+      File('${packDir.path}/${item.imageFileName}').writeAsBytesSync(webpBytes);
+    }
+
+    final pack = StickerPack(
+      identifier: packId,
+      name: 'Paket Urutan',
+      publisher: 'Kreator',
+      trayImageFile: 'tray.png',
+      imageDataVersion: '1',
+      stickers: stickerItems,
+    );
+    await WhatsAppStickersService.saveContentsJson(
+      [pack],
+      directoryPath: tempDir.path,
+    );
+    await StickerPackManager().initialize(
+      customStickersDir: tempDir.path,
+      force: true,
+    );
+
+    final duplicateService = DuplicateStickersService()..resetForTesting();
+    final initialGroups = await duplicateService.scanDuplicates();
+    expect(initialGroups.length, equals(1));
+    final initialHash = initialGroups.first.hash;
+
+    await tester.pumpWidget(
+      MaterialApp(home: PackDetailScreen(packIdentifier: pack.identifier)),
+    );
+    await tester.pump();
+
+    final firstStickerFinder = find.byKey(const ValueKey('sticker_draggable_sticker_1.webp'));
+    final thirdStickerFinder = find.byKey(const ValueKey('sticker_drag_target_sticker_3.webp'));
+    expect(firstStickerFinder, findsOneWidget);
+    expect(thirdStickerFinder, findsOneWidget);
+
+    final firstCenter = tester.getCenter(firstStickerFinder);
+    final thirdCenter = tester.getCenter(thirdStickerFinder);
+
+    // 1. Holding for only 500 ms (< 1.5 seconds) should NOT activate drag reorder
+    final shortGesture = await tester.startGesture(firstCenter);
+    await tester.pump(const Duration(milliseconds: 500));
+    await shortGesture.moveTo(thirdCenter);
+    await tester.pump();
+    await shortGesture.up();
+    await tester.pumpAndSettle();
+
+    expect(
+      StickerPackManager()
+          .getPack(packId)!
+          .stickers
+          .map((s) => s.imageFileName)
+          .toList(),
+      equals(['sticker_1.webp', 'sticker_2.webp', 'sticker_3.webp']),
+    );
+
+    // 2. Holding for 1.5 seconds activates drag mode and drops sticker_1 onto sticker_3's position
+    final holdGesture = await tester.startGesture(firstCenter);
+    await tester.pump(PackDetailScreen.stickerDragHoldDuration + const Duration(milliseconds: 100));
+    await holdGesture.moveTo(thirdCenter);
+    await tester.pump();
+    await holdGesture.up();
+    await tester.pumpAndSettle();
+
+    final reorderedPack = StickerPackManager().getPack(packId)!;
+    expect(
+      reorderedPack.stickers.map((s) => s.imageFileName).toList(),
+      equals(['sticker_2.webp', 'sticker_3.webp', 'sticker_1.webp']),
+    );
+    expect(reorderedPack.imageDataVersion, equals('2'));
+
+    // 3. Verify sticker file bytes/format and duplicate detection hash are 100% unchanged
+    final postReorderGroups = await duplicateService.scanDuplicates();
+    expect(postReorderGroups.length, equals(1));
+    expect(postReorderGroups.first.hash, equals(initialHash));
+    expect(postReorderGroups.first.occurrences.length, equals(3));
+    expect(
+      File('${packDir.path}/sticker_1.webp').readAsBytesSync(),
+      equals(webpBytes),
+    );
+  });
+
+  testWidgets(
+      'Single-tapping a sticker in PackDetailScreen opens editor with Simpan Perubahan and Informasi button (Format, Size, Waktu Simpan, Waktu Perubahan)',
+      (WidgetTester tester) async {
+    tester.view.physicalSize = const Size(430, 932);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(() => tester.view.resetPhysicalSize());
+
+    const packId = 'pack_edit_info_test';
+    final packDir =
+        Directory('${tempDir.path}/$packId')..createSync(recursive: true);
+
+    final trayImg = img.Image(width: 96, height: 96);
+    img.fill(trayImg, color: img.ColorRgba8(18, 140, 126, 255));
+    File('${packDir.path}/tray.png').writeAsBytesSync(img.encodePng(trayImg));
+
+    final stickerImg = img.Image(width: 512, height: 512);
+    img.fill(stickerImg, color: img.ColorRgba8(37, 211, 102, 255));
+    final webpBytes = Uint8List.fromList(img.encodeWebP(stickerImg));
+
+    final initialCreatedTime = DateTime(2026, 11, 10, 9, 30, 15);
+    final initialUpdatedTime = DateTime(2026, 11, 10, 10, 45, 0);
+
+    final stickerItems = <StickerItem>[
+      StickerItem(
+        imageFileName: 'sticker_1.webp',
+        emojis: const ['😀'],
+        createdAt: initialCreatedTime,
+        updatedAt: initialUpdatedTime,
+      ),
+      StickerItem(
+        imageFileName: 'sticker_2.webp',
+        emojis: const ['😂'],
+        createdAt: initialCreatedTime,
+        updatedAt: initialUpdatedTime,
+      ),
+      StickerItem(
+        imageFileName: 'sticker_3.webp',
+        emojis: const ['❤️'],
+        createdAt: initialCreatedTime,
+        updatedAt: initialUpdatedTime,
+      ),
+    ];
+    for (final item in stickerItems) {
+      File('${packDir.path}/${item.imageFileName}').writeAsBytesSync(webpBytes);
+    }
+
+    final pack = StickerPack(
+      identifier: packId,
+      name: 'Paket Edit & Info',
+      publisher: 'Kreator',
+      trayImageFile: 'tray.png',
+      imageDataVersion: '1',
+      stickers: stickerItems,
+    );
+    await WhatsAppStickersService.saveContentsJson(
+      [pack],
+      directoryPath: tempDir.path,
+    );
+    await StickerPackManager().initialize(
+      customStickersDir: tempDir.path,
+      force: true,
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(home: PackDetailScreen(packIdentifier: pack.identifier)),
+    );
+    await tester.pump();
+
+    // 1. One-touch (single tap) on sticker_1 opens AddStickerSheet in edit mode
+    final stickerTapFinder =
+        find.byKey(const ValueKey('sticker_tile_tap_sticker_1.webp'));
+    expect(stickerTapFinder, findsOneWidget);
+
+    await tester.tap(stickerTapFinder);
+    await tester.pumpAndSettle();
+
+    // Verify editor title and buttons ("Informasi" & "Simpan Perubahan")
+    expect(find.text('Edit Stiker'), findsOneWidget);
+    final infoBtnFinder = find.byKey(const Key('sticker_info_button'));
+    final saveChangesBtnFinder =
+        find.byKey(const Key('save_sticker_changes_button'));
+    expect(infoBtnFinder, findsOneWidget);
+    expect(saveChangesBtnFinder, findsOneWidget);
+    expect(find.text('Informasi'), findsOneWidget);
+    expect(find.text('Simpan Perubahan'), findsOneWidget);
+
+    // 2. Tap "Informasi" button -> shows sticker detail dialog (Format, Size, Waktu Simpan, Waktu Perubahan)
+    await tester.ensureVisible(infoBtnFinder);
+    await tester.pumpAndSettle();
+    await tester.tap(infoBtnFinder);
+    await tester.pumpAndSettle();
+
+    expect(find.text('Informasi Stiker'), findsOneWidget);
+    expect(find.text('Format'), findsOneWidget);
+    expect(find.text('WEBP (Statis • 512 × 512 px)'), findsOneWidget);
+    expect(find.text('Size'), findsOneWidget);
+    expect(find.textContaining('Bytes)'), findsOneWidget);
+    expect(find.text('Waktu Simpan'), findsOneWidget);
+    expect(find.text('10 Nov 2026, 09:30:15'), findsOneWidget);
+    expect(find.text('Waktu Perubahan'), findsOneWidget);
+    expect(find.text('10 Nov 2026, 10:45:00'), findsOneWidget);
+
+    // Close info dialog
+    await tester.tap(find.text('Tutup'));
+    await tester.pumpAndSettle();
+
+    // 3. Edit emoji and tap "Simpan Perubahan"
+    final fireEmojiFinder = find.text('🔥');
+    await tester.ensureVisible(fireEmojiFinder);
+    await tester.pumpAndSettle();
+    await tester.tap(fireEmojiFinder);
+    await tester.pump();
+
+    await tester.ensureVisible(saveChangesBtnFinder);
+    await tester.pumpAndSettle();
+    await tester.tap(saveChangesBtnFinder);
+    await tester.pumpAndSettle();
+
+    // Let notification overlay timer complete
+    await tester.pump(const Duration(seconds: 5));
+
+    // Verify sticker in pack was updated in-place, preserving Waktu Simpan (createdAt) and updating Waktu Perubahan (updatedAt)
+    final updatedPack = StickerPackManager().getPack(packId)!;
+    expect(updatedPack.stickers.length, equals(3));
+    final editedSticker = updatedPack.stickers.first;
+    expect(editedSticker.emojis, contains('🔥'));
+    expect(editedSticker.createdAt, equals(initialCreatedTime));
+    expect(editedSticker.updatedAt, isNotNull);
+    expect(editedSticker.updatedAt!.isAfter(initialUpdatedTime), isTrue);
   });
 }

@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:sticker_flutter/services/sticker_pack_manager.dart';
 import 'package:sticker_flutter/services/whatsapp_stickers_service.dart';
 import 'package:sticker_flutter/ui/widgets/add_sticker_sheet.dart';
@@ -8,6 +9,9 @@ import 'package:sticker_flutter/ui/widgets/sticker_grid_tile.dart';
 /// Screen displaying the details of a sticker pack, its grid of stickers, and the WhatsApp export button.
 class PackDetailScreen extends StatefulWidget {
   final String packIdentifier;
+
+  /// Hold duration required (1.5 seconds) to activate sticker drag-and-drop reordering.
+  static const Duration stickerDragHoldDuration = Duration(milliseconds: 1500);
 
   const PackDetailScreen({
     super.key,
@@ -20,7 +24,37 @@ class PackDetailScreen extends StatefulWidget {
 
 class _PackDetailScreenState extends State<PackDetailScreen> {
   final _manager = StickerPackManager();
+  final ScrollController _gridScrollController = ScrollController();
+  final GlobalKey _gridViewKey = GlobalKey();
   bool _isExporting = false;
+
+  @override
+  void dispose() {
+    _gridScrollController.dispose();
+    super.dispose();
+  }
+
+  void _handleDragAutoScroll(DragUpdateDetails details) {
+    if (!_gridScrollController.hasClients) return;
+    final renderBox = _gridViewKey.currentContext?.findRenderObject() as RenderBox?;
+    if (renderBox == null) return;
+
+    final localPos = renderBox.globalToLocal(details.globalPosition);
+    const edgeThreshold = 64.0;
+    const scrollStep = 8.0;
+    final pos = _gridScrollController.position;
+
+    if (localPos.dy < edgeThreshold && pos.pixels > pos.minScrollExtent) {
+      _gridScrollController.jumpTo(
+        (pos.pixels - scrollStep).clamp(pos.minScrollExtent, pos.maxScrollExtent),
+      );
+    } else if (localPos.dy > renderBox.size.height - edgeThreshold &&
+        pos.pixels < pos.maxScrollExtent) {
+      _gridScrollController.jumpTo(
+        (pos.pixels + scrollStep).clamp(pos.minScrollExtent, pos.maxScrollExtent),
+      );
+    }
+  }
 
   void _openAddStickerSheet() {
     final pack = _manager.getPack(widget.packIdentifier);
@@ -40,6 +74,23 @@ class _PackDetailScreenState extends State<PackDetailScreen> {
       isScrollControlled: true,
       backgroundColor: Colors.transparent,
       builder: (_) => AddStickerSheet(packIdentifier: widget.packIdentifier),
+    );
+  }
+
+  void _openEditStickerSheet(
+    StickerPack pack,
+    StickerItem sticker,
+    String? filePath,
+  ) {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (_) => AddStickerSheet(
+        packIdentifier: pack.identifier,
+        editingSticker: sticker,
+        editingStickerFilePath: filePath,
+      ),
     );
   }
 
@@ -224,6 +275,8 @@ class _PackDetailScreenState extends State<PackDetailScreen> {
               // Grid of stickers
               Expanded(
                 child: GridView.builder(
+                  key: _gridViewKey,
+                  controller: _gridScrollController,
                   padding: const EdgeInsets.all(16),
                   gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
                     crossAxisCount: 3,
@@ -237,19 +290,18 @@ class _PackDetailScreenState extends State<PackDetailScreen> {
                       return _buildAddStickerSlot(totalStickers);
                     }
 
-                    final sticker = pack.stickers[index - 1];
+                    final stickerIndex = index - 1;
+                    final sticker = pack.stickers[stickerIndex];
                     final filePath = _manager.getStickerFilePath(
                       pack.identifier,
                       sticker.imageFileName,
                     );
 
-                    return StickerGridTile(
+                    return _buildReorderableStickerTile(
+                      pack: pack,
                       sticker: sticker,
+                      stickerIndex: stickerIndex,
                       filePath: filePath,
-                      onDelete: () => _manager.removeStickerFromPack(
-                        packIdentifier: pack.identifier,
-                        fileName: sticker.imageFileName,
-                      ),
                     );
                   },
                 ),
@@ -259,6 +311,87 @@ class _PackDetailScreenState extends State<PackDetailScreen> {
               _buildBottomActionBar(pack, canAdd, isInstalled),
             ],
           ),
+        );
+      },
+    );
+  }
+
+  Widget _buildReorderableStickerTile({
+    required StickerPack pack,
+    required StickerItem sticker,
+    required int stickerIndex,
+    required String? filePath,
+  }) {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final tileSize = constraints.biggest;
+
+        return DragTarget<int>(
+          key: ValueKey('sticker_drag_target_${sticker.imageFileName}'),
+          onWillAcceptWithDetails: (details) => details.data != stickerIndex,
+          onAcceptWithDetails: (details) async {
+            await _manager.reorderStickerInPack(
+              packIdentifier: pack.identifier,
+              oldIndex: details.data,
+              newIndex: stickerIndex,
+            );
+          },
+          builder: (context, candidateData, rejectedData) {
+            final isTargetHovered = candidateData.isNotEmpty;
+
+            return LongPressDraggable<int>(
+              key: ValueKey('sticker_draggable_${sticker.imageFileName}'),
+              data: stickerIndex,
+              delay: PackDetailScreen.stickerDragHoldDuration,
+              hapticFeedbackOnStart: true,
+              onDragStarted: () {
+                HapticFeedback.mediumImpact();
+              },
+              onDragUpdate: _handleDragAutoScroll,
+              feedback: Material(
+                color: Colors.transparent,
+                elevation: 12,
+                borderRadius: BorderRadius.circular(16),
+                child: Transform.scale(
+                  scale: 1.06,
+                  child: SizedBox(
+                    width: tileSize.width,
+                    height: tileSize.height,
+                    child: StickerGridTile(
+                      sticker: sticker,
+                      filePath: filePath,
+                      isDragTargetHighlighted: true,
+                      showDeleteButton: false,
+                      onDelete: () {},
+                    ),
+                  ),
+                ),
+              ),
+              childWhenDragging: Opacity(
+                opacity: 0.35,
+                child: StickerGridTile(
+                  sticker: sticker,
+                  filePath: filePath,
+                  showDeleteButton: false,
+                  onDelete: () {},
+                ),
+              ),
+              child: AnimatedScale(
+                scale: isTargetHovered ? 0.94 : 1.0,
+                duration: const Duration(milliseconds: 160),
+                child: StickerGridTile(
+                  sticker: sticker,
+                  filePath: filePath,
+                  isDragTargetHighlighted: isTargetHovered,
+                  onTap: () => _openEditStickerSheet(pack, sticker, filePath),
+                  onDelete: () => _manager.removeStickerFromPack(
+                    packIdentifier: pack.identifier,
+                    fileName: sticker.imageFileName,
+                  ),
+                ),
+              ),
+            );
+          },
         );
       },
     );

@@ -9,24 +9,69 @@ import 'package:url_launcher/url_launcher.dart';
 class StickerItem {
   final String imageFileName;
   final List<String> emojis;
+  final DateTime? createdAt;
+  final DateTime? updatedAt;
 
   const StickerItem({
     required this.imageFileName,
     this.emojis = const ['😀'],
+    this.createdAt,
+    this.updatedAt,
   });
+
+  /// Resolves the creation timestamp from [createdAt], filename microsecond pattern, or file metadata.
+  DateTime? resolveCreatedAt([String? filePath]) {
+    if (createdAt != null) return createdAt;
+    final match = RegExp(r'sticker_(\d+)_').firstMatch(imageFileName);
+    if (match != null) {
+      final micros = int.tryParse(match.group(1)!);
+      if (micros != null && micros > 1000000000000000) {
+        return DateTime.fromMicrosecondsSinceEpoch(micros);
+      }
+    }
+    if (filePath != null) {
+      try {
+        final file = File(filePath);
+        if (file.existsSync()) {
+          return file.statSync().modified;
+        }
+      } catch (_) {}
+    }
+    return null;
+  }
+
+  /// Resolves the last modification timestamp from [updatedAt], [createdAt], or file metadata.
+  DateTime? resolveUpdatedAt([String? filePath]) {
+    if (updatedAt != null) return updatedAt;
+    if (filePath != null) {
+      try {
+        final file = File(filePath);
+        if (file.existsSync()) {
+          return file.statSync().modified;
+        }
+      } catch (_) {}
+    }
+    return resolveCreatedAt(filePath);
+  }
 
   Map<String, dynamic> toJson() => {
         'image_file': imageFileName,
         'emojis': emojis,
+        if (createdAt != null) 'created_at': createdAt!.toIso8601String(),
+        if (updatedAt != null) 'updated_at': updatedAt!.toIso8601String(),
       };
 
   factory StickerItem.fromJson(Map<String, dynamic> json) {
+    final createdRaw = json['created_at'] as String?;
+    final updatedRaw = json['updated_at'] as String?;
     return StickerItem(
       imageFileName: json['image_file'] as String,
       emojis: (json['emojis'] as List<dynamic>?)
               ?.map((e) => e.toString())
               .toList() ??
           ['😀'],
+      createdAt: createdRaw != null ? DateTime.tryParse(createdRaw) : null,
+      updatedAt: updatedRaw != null ? DateTime.tryParse(updatedRaw) : null,
     );
   }
 }

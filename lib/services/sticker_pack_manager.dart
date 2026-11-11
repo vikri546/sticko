@@ -187,8 +187,14 @@ class StickerPackManager extends ChangeNotifier {
     // 3. Increment image_data_version for WhatsApp update sync
     final currentVersion = int.tryParse(currentPack.imageDataVersion) ?? 1;
     final newVersion = (currentVersion + 1).toString();
+    final now = DateTime.now();
 
-    final newSticker = StickerItem(imageFileName: fileName, emojis: emojis);
+    final newSticker = StickerItem(
+      imageFileName: fileName,
+      emojis: emojis,
+      createdAt: now,
+      updatedAt: now,
+    );
     final updatedPack = currentPack.copyWith(
       animatedStickerPack: shouldBeAnimated,
       imageDataVersion: newVersion,
@@ -259,8 +265,14 @@ class StickerPackManager extends ChangeNotifier {
 
     final currentVersion = int.tryParse(currentPack.imageDataVersion) ?? 1;
     final newVersion = (currentVersion + 1).toString();
+    final now = DateTime.now();
 
-    final newSticker = StickerItem(imageFileName: fileName, emojis: emojis);
+    final newSticker = StickerItem(
+      imageFileName: fileName,
+      emojis: emojis,
+      createdAt: now,
+      updatedAt: now,
+    );
     final updatedPack = currentPack.copyWith(
       animatedStickerPack: shouldBeAnimated,
       imageDataVersion: newVersion,
@@ -329,9 +341,12 @@ class StickerPackManager extends ChangeNotifier {
         trayFile.writeAsBytesSync(trayBytes);
       }
 
+      final itemNow = DateTime.now();
       newStickers.add(StickerItem(
         imageFileName: fileName,
         emojis: defaultEmojis.isNotEmpty ? defaultEmojis : ['😀'],
+        createdAt: itemNow,
+        updatedAt: itemNow,
       ));
     }
 
@@ -381,6 +396,43 @@ class StickerPackManager extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// Reorder a sticker within a pack from [oldIndex] to [newIndex].
+  /// Persists the updated order to `contents.json` and increments `imageDataVersion`
+  /// so WhatsApp syncs the new sticker order on update.
+  Future<void> reorderStickerInPack({
+    required String packIdentifier,
+    required int oldIndex,
+    required int newIndex,
+  }) async {
+    final packIndex = _packs.indexWhere((p) => p.identifier == packIdentifier);
+    if (packIndex == -1) return;
+
+    final currentPack = _packs[packIndex];
+    final count = currentPack.stickers.length;
+    if (oldIndex < 0 ||
+        oldIndex >= count ||
+        newIndex < 0 ||
+        newIndex >= count ||
+        oldIndex == newIndex) {
+      return;
+    }
+
+    final updatedStickers = List<StickerItem>.from(currentPack.stickers);
+    final movedSticker = updatedStickers.removeAt(oldIndex);
+    updatedStickers.insert(newIndex, movedSticker);
+
+    final currentVersion = int.tryParse(currentPack.imageDataVersion) ?? 1;
+    final newVersion = (currentVersion + 1).toString();
+
+    _packs[packIndex] = currentPack.copyWith(
+      imageDataVersion: newVersion,
+      stickers: updatedStickers,
+    );
+
+    await _savePacks();
+    notifyListeners();
+  }
+
   /// Replace an existing sticker in a pack with new image bytes.
   Future<StickerItem> replaceStickerInPack({
     required String packIdentifier,
@@ -405,8 +457,12 @@ class StickerPackManager extends ChangeNotifier {
         await WhatsAppStickersService.getStickersDirectory();
     final packDirPath = '$dirPath/$packIdentifier';
 
-    // Delete old sticker file if it exists
+    // Preserve original creation time before deleting old file
     final oldFile = File('$packDirPath/$oldFileName');
+    final preservedCreatedAt =
+        oldSticker.resolveCreatedAt(oldFile.path) ?? DateTime.now();
+
+    // Delete old sticker file if it exists
     if (oldFile.existsSync()) {
       try {
         oldFile.deleteSync();
@@ -415,7 +471,8 @@ class StickerPackManager extends ChangeNotifier {
       }
     }
 
-    final timestamp = DateTime.now().microsecondsSinceEpoch;
+    final now = DateTime.now();
+    final timestamp = now.microsecondsSinceEpoch;
     final newFileName = 'sticker_${timestamp}_${++_stickerCounter}.webp';
 
     final maxBytes = currentPack.animatedStickerPack
@@ -440,6 +497,8 @@ class StickerPackManager extends ChangeNotifier {
     final updatedSticker = StickerItem(
       imageFileName: newFileName,
       emojis: newEmojis ?? oldSticker.emojis,
+      createdAt: preservedCreatedAt,
+      updatedAt: now,
     );
 
     final updatedStickers = List<StickerItem>.from(currentPack.stickers);
