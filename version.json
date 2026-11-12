@@ -1,8 +1,9 @@
 {
   "latest_version": "1.0.5+6",
   "min_required_version": "1.0.0",
+  "release_tag": "sticko-3",
   "title": "Pembaruan Sticko Tersedia",
   "message": "Versi terbaru Sticko telah tersedia. Ketuk untuk memperbarui aplikasi.",
-  "apk_url": "https://github.com/vikri546/sticko/releases/latest/download/app-release.apk",
+  "apk_url": "https://github.com/vikri546/sticko/releases/download/sticko-3/sticko-app-1.0.5.apk",
   "is_force_update": false
 }

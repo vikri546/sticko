@@ -209,7 +209,7 @@ void main() {
       expect(recordedProgress.last, equals(100));
     });
 
-    test('normalizeApkUrl and isDirectApkUrl handle GitHub Releases URLs properly', () {
+    test('normalizeApkUrl, buildCandidateApkUrls, and isDirectApkUrl handle dynamic tags (sticko-3, sticko-4) and sticko-app-<version> filenames', () {
       expect(
         AppUpdateService.normalizeApkUrl('https://github.com/vikri546/sticko/releases/latest'),
         equals('https://github.com/vikri546/sticko/releases/latest/download/app-release.apk'),
@@ -219,10 +219,51 @@ void main() {
         equals('https://github.com/vikri546/sticko/releases/download/v1.0.4/app-release.apk'),
       );
       expect(
+        AppUpdateService.normalizeApkUrl(
+          'https://github.com/vikri546/sticko/releases/tag/sticko-3',
+          targetVersion: '1.0.5+6',
+        ),
+        equals('https://github.com/vikri546/sticko/releases/download/sticko-3/sticko-app-1.0.5.apk'),
+      );
+      expect(
+        AppUpdateService.normalizeApkUrl(
+          'https://github.com/vikri546/sticko/releases/tag/sticko-4',
+          targetVersion: '1.0.6+7',
+        ),
+        equals('https://github.com/vikri546/sticko/releases/download/sticko-4/sticko-app-1.0.6.apk'),
+      );
+
+      final candidates = AppUpdateService.buildCandidateApkUrls(
+        'https://github.com/vikri546/sticko/releases/tag/sticko-3',
+        targetVersion: '1.0.5+6',
+      );
+      expect(
+        candidates,
+        containsAll(<String>[
+          'https://github.com/vikri546/sticko/releases/download/sticko-3/sticko-app-1.0.5.apk',
+          'https://github.com/vikri546/sticko/releases/download/sticko-3/sticko-app-1.0.5',
+          'https://github.com/vikri546/sticko/releases/download/sticko-3/app-release.apk',
+          'https://github.com/vikri546/sticko/releases/latest/download/sticko-app-1.0.5.apk',
+        ]),
+      );
+
+      expect(
         AppUpdateService.isDirectApkUrl(
           'https://github.com/vikri546/sticko/releases/latest/download/app-release.apk',
         ),
         isTrue,
+      );
+      expect(
+        AppUpdateService.isDirectApkUrl(
+          'https://github.com/vikri546/sticko/releases/download/sticko-3/sticko-app-1.0.5',
+        ),
+        isTrue,
+      );
+      expect(
+        AppUpdateService.isDirectApkUrl(
+          'https://github.com/vikri546/sticko/releases/tag/sticko-3',
+        ),
+        isFalse,
       );
       expect(
         AppUpdateService.isDirectApkUrl(
@@ -233,6 +274,41 @@ void main() {
       expect(
         AppUpdateService.isDirectApkUrl('https://example.com/test.apk.test'),
         isFalse,
+      );
+    });
+
+    test('checkRemoteUpdate extracts version and APK download URL when GitHub tag is sticko-3 / sticko-4 and asset is sticko-app-1.0.5', () async {
+      final mockClient = _MockHttpClient(
+        responseBody: jsonEncode({
+          'tag_name': 'sticko-3',
+          'name': 'Sticko Release 1.0.5',
+          'body': 'Pembaruan fitur stiker',
+          'assets': [
+            {
+              'name': 'sticko-app-1.0.5',
+              'content_type': 'application/vnd.android.package-archive',
+              'browser_download_url':
+                  'https://github.com/vikri546/sticko/releases/download/sticko-3/sticko-app-1.0.5',
+            },
+          ],
+        }),
+      );
+
+      final info = await AppUpdateService.checkRemoteUpdate(
+        currentVersion: '1.0.4+5',
+        checkUrl: 'https://api.github.com/repos/vikri546/sticko/releases/latest',
+        customClient: mockClient,
+        showStatusBarNotification: false,
+      );
+
+      expect(info, isNotNull);
+      expect(info!.hasUpdate, isTrue);
+      expect(info.latestVersion, equals('1.0.5'));
+      expect(
+        info.updateUrl,
+        equals(
+          'https://github.com/vikri546/sticko/releases/download/sticko-3/sticko-app-1.0.5',
+        ),
       );
     });
 

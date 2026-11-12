@@ -41,15 +41,18 @@ class AppUpdateInfo {
 /// and automatic APK download & installation.
 class AppUpdateService {
   static const String defaultCurrentVersion = '1.0.5+6';
+  static const String defaultReleaseTag = 'sticko-3';
   static const String defaultStoreUrl =
       'https://play.google.com/store/apps/details?id=com.pkri.sticko';
   static const String defaultGitHubReleasesApi =
       'https://api.github.com/repos/vikri546/sticko/releases/latest';
+  static const String defaultGitHubAllReleasesApi =
+      'https://api.github.com/repos/vikri546/sticko/releases?per_page=10';
   static const String defaultUpdateCheckUrl =
       'https://raw.githubusercontent.com/vikri546/sticko/main/version.json';
   static const String defaultDirectApkUrl =
-      'https://github.com/vikri546/sticko/releases/latest/download/app-release.apk';
-  
+      'https://github.com/vikri546/sticko/releases/download/sticko-3/sticko-app-1.0.5.apk';
+
   static bool _isDialogShowing = false;
 
   /// Optional test hook allowing widget tests to simulate remote update responses.
@@ -73,19 +76,94 @@ class AppUpdateService {
     return defaultCurrentVersion;
   }
 
+  /// Clean version string without leading 'v'/'V' or trailing '+build' number
+  /// (e.g. '1.0.5+6' -> '1.0.5').
+  static String cleanVersionName(String version) {
+    return version
+        .replaceFirst(RegExp(r'^[vV]'), '')
+        .split('+')
+        .first
+        .trim();
+  }
+
+  /// Generate the standard Sticko APK file name for a given [version]
+  /// (e.g. '1.0.5+6' -> 'sticko-app-1.0.5.apk').
+  static String apkFileNameForVersion(String version) {
+    final cleanVer = cleanVersionName(version);
+    if (cleanVer.isEmpty) return 'app-release.apk';
+    return 'sticko-app-$cleanVer.apk';
+  }
+
+  /// Extract a semantic version (e.g. '1.0.5' or '1.0.5+6') from a string such as
+  /// a release title or asset filename ('sticko-app-1.0.5.apk' -> '1.0.5').
+  static String? extractSemanticVersion(String input) {
+    final match = RegExp(r'(\d+\.\d+\.\d+(?:\+\d+)?)').firstMatch(input);
+    return match?.group(1);
+  }
+
+  /// Extract GitHub `<owner>`, `<repo>`, and optional `<tag>` from a GitHub Release URL.
+  static ({String owner, String repo, String? tag})? parseGitHubReleaseUrl(
+    String url,
+  ) {
+    final trimmed = url.trim();
+    final tagPageMatch = RegExp(
+      r'^https?://github\.com/([^/]+)/([^/]+)/releases/tag/([^/?#]+)',
+      caseSensitive: false,
+    ).firstMatch(trimmed);
+    if (tagPageMatch != null) {
+      return (
+        owner: tagPageMatch.group(1)!,
+        repo: tagPageMatch.group(2)!,
+        tag: tagPageMatch.group(3)!,
+      );
+    }
+
+    final downloadTagMatch = RegExp(
+      r'^https?://github\.com/([^/]+)/([^/]+)/releases/download/([^/]+)/',
+      caseSensitive: false,
+    ).firstMatch(trimmed);
+    if (downloadTagMatch != null) {
+      return (
+        owner: downloadTagMatch.group(1)!,
+        repo: downloadTagMatch.group(2)!,
+        tag: downloadTagMatch.group(3)!,
+      );
+    }
+
+    final generalRepoMatch = RegExp(
+      r'^https?://github\.com/([^/]+)/([^/]+)/releases',
+      caseSensitive: false,
+    ).firstMatch(trimmed);
+    if (generalRepoMatch != null) {
+      return (
+        owner: generalRepoMatch.group(1)!,
+        repo: generalRepoMatch.group(2)!,
+        tag: null,
+      );
+    }
+
+    return null;
+  }
+
   /// Normalize GitHub Release URLs into direct `.apk` download URLs automatically.
   ///
   /// Supports:
   /// - `https://github.com/<owner>/<repo>/releases/latest/download/<file>.apk` (kept as-is)
   /// - `https://github.com/<owner>/<repo>/releases/download/<tag>/<file>.apk` (kept as-is)
-  /// - `https://github.com/<owner>/<repo>/releases/latest` -> `.../releases/latest/download/app-release.apk`
-  /// - `https://github.com/<owner>/<repo>/releases/tag/<tag>` -> `.../releases/download/<tag>/app-release.apk`
+  /// - `https://github.com/<owner>/<repo>/releases/latest` -> `.../releases/latest/download/<apkName>`
+  /// - `https://github.com/<owner>/<repo>/releases/tag/<tag>` -> `.../releases/download/<tag>/<apkName>`
   static String normalizeApkUrl(
     String rawUrl, {
-    String defaultApkName = 'app-release.apk',
+    String? targetVersion,
+    String? defaultApkName,
   }) {
     final trimmed = rawUrl.trim();
     if (trimmed.isEmpty) return trimmed;
+
+    final resolvedApkName = defaultApkName ??
+        (targetVersion != null && targetVersion.trim().isNotEmpty
+            ? apkFileNameForVersion(targetVersion)
+            : 'app-release.apk');
 
     // Match https://github.com/<owner>/<repo>/releases/latest[/]
     final latestMatch = RegExp(
@@ -95,26 +173,102 @@ class AppUpdateService {
     if (latestMatch != null) {
       final owner = latestMatch.group(1)!;
       final repo = latestMatch.group(2)!;
-      return 'https://github.com/$owner/$repo/releases/latest/download/$defaultApkName';
+      return 'https://github.com/$owner/$repo/releases/latest/download/$resolvedApkName';
     }
 
     // Match https://github.com/<owner>/<repo>/releases/tag/<tag>[/]
     final tagMatch = RegExp(
-      r'^https?://github\.com/([^/]+)/([^/]+)/releases/tag/([^/]+)/?$',
+      r'^https?://github\.com/([^/]+)/([^/]+)/releases/tag/([^/?#]+)/?$',
       caseSensitive: false,
     ).firstMatch(trimmed);
     if (tagMatch != null) {
       final owner = tagMatch.group(1)!;
       final repo = tagMatch.group(2)!;
       final tag = tagMatch.group(3)!;
-      return 'https://github.com/$owner/$repo/releases/download/$tag/$defaultApkName';
+      return 'https://github.com/$owner/$repo/releases/download/$tag/$resolvedApkName';
     }
 
     return trimmed;
   }
 
+  /// Build an ordered list of candidate direct APK download URLs for [rawUrl] and [targetVersion].
+  /// Handles tag changes (`sticko-3`, `sticko-4`, ...) and filename variations
+  /// (`sticko-app-1.0.5.apk`, `sticko-app-1.0.5`, `app-release.apk`).
+  static List<String> buildCandidateApkUrls(
+    String rawUrl, {
+    String? targetVersion,
+    String? releaseTag,
+  }) {
+    final candidates = <String>[];
+    void addCandidate(String url) {
+      final u = url.trim();
+      if (u.isNotEmpty && !candidates.contains(u)) {
+        candidates.add(u);
+      }
+    }
+
+    final cleanVer = targetVersion != null ? cleanVersionName(targetVersion) : '';
+    final versionedApk = cleanVer.isNotEmpty ? 'sticko-app-$cleanVer.apk' : null;
+    final versionedNoExt = cleanVer.isNotEmpty ? 'sticko-app-$cleanVer' : null;
+
+    final parsed = parseGitHubReleaseUrl(rawUrl);
+    final owner = parsed?.owner ?? 'vikri546';
+    final repo = parsed?.repo ?? 'sticko';
+    final tag = (releaseTag != null && releaseTag.trim().isNotEmpty)
+        ? releaseTag.trim()
+        : parsed?.tag;
+
+    // 1. If rawUrl is already a direct download URL (not a /releases/tag/ HTML page), try it
+    final normalizedWithVersion = normalizeApkUrl(
+      rawUrl,
+      targetVersion: targetVersion,
+    );
+    if (isDirectApkUrl(normalizedWithVersion)) {
+      addCandidate(normalizedWithVersion);
+    }
+
+    // 2. If we have a specific release tag (e.g. sticko-3, sticko-4), try versioned & standard filenames on that tag
+    if (tag != null && tag.isNotEmpty) {
+      if (versionedApk != null) {
+        addCandidate(
+          'https://github.com/$owner/$repo/releases/download/$tag/$versionedApk',
+        );
+      }
+      if (versionedNoExt != null) {
+        addCandidate(
+          'https://github.com/$owner/$repo/releases/download/$tag/$versionedNoExt',
+        );
+      }
+      addCandidate(
+        'https://github.com/$owner/$repo/releases/download/$tag/app-release.apk',
+      );
+    }
+
+    // 3. Also try /releases/latest/download/ with versioned & standard filenames
+    if (versionedApk != null) {
+      addCandidate(
+        'https://github.com/$owner/$repo/releases/latest/download/$versionedApk',
+      );
+    }
+    if (versionedNoExt != null) {
+      addCandidate(
+        'https://github.com/$owner/$repo/releases/latest/download/$versionedNoExt',
+      );
+    }
+    addCandidate(
+      'https://github.com/$owner/$repo/releases/latest/download/app-release.apk',
+    );
+
+    final normalizedDefault = normalizeApkUrl(rawUrl);
+    if (isDirectApkUrl(normalizedDefault)) {
+      addCandidate(normalizedDefault);
+    }
+
+    return candidates;
+  }
+
   /// Returns `true` if [url] points directly to a downloadable `.apk` package
-  /// (including GitHub `releases/latest/download/*.apk` and URLs with query strings).
+  /// or a GitHub Release binary asset download path (`/releases/download/...` or `/releases/latest/download/...`).
   static bool isDirectApkUrl(String url) {
     final trimmed = url.trim();
     if (trimmed.isEmpty ||
@@ -124,7 +278,18 @@ class AppUpdateService {
     }
     final uri = Uri.tryParse(trimmed);
     if (uri == null) return false;
-    return uri.path.toLowerCase().endsWith('.apk');
+    final lowerPath = uri.path.toLowerCase();
+    if (lowerPath.contains('/releases/tag/')) {
+      return false;
+    }
+    if (lowerPath.endsWith('.apk')) {
+      return true;
+    }
+    if (lowerPath.contains('/releases/download/') ||
+        lowerPath.contains('/releases/latest/download/')) {
+      return true;
+    }
+    return false;
   }
 
   /// Compare two semantic version strings (e.g., '1.0.0' vs '1.1.0' or '1.0.3+4' vs '1.0.4+5').
@@ -156,30 +321,141 @@ class AppUpdateService {
     }
   }
 
+  /// Check if a GitHub Release asset JSON object represents an APK binary
+  /// (supports both `sticko-app-1.0.5.apk` and `sticko-app-1.0.5` without `.apk` extension).
+  static bool _isApkReleaseAsset(Map asset) {
+    final name = (asset['name']?.toString() ?? '').trim().toLowerCase();
+    final dlUrl =
+        (asset['browser_download_url']?.toString() ?? '').trim().toLowerCase();
+    final contentType =
+        (asset['content_type']?.toString() ?? '').trim().toLowerCase();
+
+    if (name.endsWith('.zip') ||
+        name.endsWith('.tar.gz') ||
+        name.endsWith('.txt') ||
+        name.endsWith('.json') ||
+        name.endsWith('.sha256') ||
+        name.endsWith('.md')) {
+      return false;
+    }
+
+    if (name.endsWith('.apk') || dlUrl.endsWith('.apk')) {
+      return true;
+    }
+    if (contentType == 'application/vnd.android.package-archive') {
+      return true;
+    }
+    if (name.startsWith('sticko-app') ||
+        name.startsWith('sticko_') ||
+        name.startsWith('app-release')) {
+      return dlUrl.isNotEmpty;
+    }
+    return false;
+  }
+
+  /// Extract the best matching APK `browser_download_url` from a single GitHub Release JSON map.
+  static String? _extractApkUrlFromReleaseMap(
+    Map releaseData, {
+    String? targetVersion,
+  }) {
+    final assets = releaseData['assets'];
+    if (assets is! List || assets.isEmpty) return null;
+
+    final cleanVer =
+        targetVersion != null ? cleanVersionName(targetVersion) : '';
+    String? firstValidUrl;
+
+    for (final asset in assets) {
+      if (asset is Map && _isApkReleaseAsset(asset)) {
+        final dlUrl = asset['browser_download_url']?.toString().trim() ?? '';
+        if (dlUrl.isEmpty) continue;
+        firstValidUrl ??= dlUrl;
+
+        final name = asset['name']?.toString().toLowerCase() ?? '';
+        if (cleanVer.isNotEmpty &&
+            (name.contains(cleanVer.toLowerCase()) ||
+                dlUrl.toLowerCase().contains(cleanVer.toLowerCase()))) {
+          return dlUrl;
+        }
+      }
+    }
+
+    return firstValidUrl;
+  }
+
   /// Resolve the exact `.apk` asset URL from GitHub Releases API if available.
-  static Future<String?> _resolveGitHubReleaseAssetApkUrl(HttpClient client) async {
-    try {
-      final req = await client.getUrl(Uri.parse(defaultGitHubReleasesApi));
-      req.headers.set('User-Agent', 'Sticko-App-Update-Checker');
-      req.headers.set('Accept', 'application/json');
-      final res = await req.close();
-      if (res.statusCode == 200) {
-        final body = await res.transform(utf8.decoder).join();
-        final data = jsonDecode(body);
-        if (data is Map && data['assets'] is List) {
-          for (final asset in data['assets'] as List) {
-            if (asset is Map) {
-              final dlUrl = asset['browser_download_url']?.toString() ?? '';
-              if (isDirectApkUrl(dlUrl)) {
-                return dlUrl;
+  /// Checks specific tag (`/releases/tags/<tag>`), `/releases/latest`, and `/releases?per_page=10`.
+  static Future<String?> _resolveGitHubReleaseAssetApkUrl(
+    HttpClient client, {
+    String? rawUrl,
+    String? targetVersion,
+    String? releaseTag,
+  }) async {
+    final parsed = rawUrl != null ? parseGitHubReleaseUrl(rawUrl) : null;
+    final owner = parsed?.owner ?? 'vikri546';
+    final repo = parsed?.repo ?? 'sticko';
+    final tag = (releaseTag != null && releaseTag.trim().isNotEmpty)
+        ? releaseTag.trim()
+        : parsed?.tag;
+
+    final apiUrls = <String>[
+      if (tag != null && tag.isNotEmpty)
+        'https://api.github.com/repos/$owner/$repo/releases/tags/$tag',
+      'https://api.github.com/repos/$owner/$repo/releases/latest',
+      'https://api.github.com/repos/$owner/$repo/releases?per_page=10',
+    ];
+
+    final cleanVer =
+        targetVersion != null ? cleanVersionName(targetVersion) : '';
+
+    for (final apiUrl in apiUrls) {
+      try {
+        final req = await client.getUrl(Uri.parse(apiUrl));
+        req.headers.set('User-Agent', 'Sticko-App-Update-Checker');
+        req.headers.set('Accept', 'application/vnd.github+json');
+        final res = await req.close();
+        if (res.statusCode == 200) {
+          final body = await res.transform(utf8.decoder).join();
+          final data = jsonDecode(body);
+
+          if (data is Map) {
+            final found = _extractApkUrlFromReleaseMap(
+              data,
+              targetVersion: targetVersion,
+            );
+            if (found != null) return found;
+          } else if (data is List) {
+            // 1. Prefer a release whose asset or tag matches targetVersion or tag
+            if (cleanVer.isNotEmpty) {
+              for (final rel in data) {
+                if (rel is Map) {
+                  final found = _extractApkUrlFromReleaseMap(
+                    rel,
+                    targetVersion: targetVersion,
+                  );
+                  if (found != null &&
+                      found.toLowerCase().contains(cleanVer.toLowerCase())) {
+                    return found;
+                  }
+                }
+              }
+            }
+            // 2. Otherwise return the newest release that has an APK asset
+            for (final rel in data) {
+              if (rel is Map) {
+                final found = _extractApkUrlFromReleaseMap(
+                  rel,
+                  targetVersion: targetVersion,
+                );
+                if (found != null) return found;
               }
             }
           }
+        } else {
+          await res.drain().catchError((_) {});
         }
-      } else {
-        await res.drain().catchError((_) {});
-      }
-    } catch (_) {}
+      } catch (_) {}
+    }
     return null;
   }
 
@@ -222,22 +498,54 @@ class AppUpdateService {
         await response.drain().catchError((_) {});
         final fallbackReq = await client.getUrl(Uri.parse(defaultGitHubReleasesApi));
         fallbackReq.headers.set('User-Agent', 'Sticko-App-Update-Checker');
-        fallbackReq.headers.set('Accept', 'application/json');
+        fallbackReq.headers.set('Accept', 'application/vnd.github+json');
         response = await fallbackReq.close();
+
+        if (response.statusCode != 200) {
+          await response.drain().catchError((_) {});
+          final allReleasesReq =
+              await client.getUrl(Uri.parse(defaultGitHubAllReleasesApi));
+          allReleasesReq.headers.set('User-Agent', 'Sticko-App-Update-Checker');
+          allReleasesReq.headers.set('Accept', 'application/vnd.github+json');
+          response = await allReleasesReq.close();
+        }
       }
 
       if (response.statusCode == 200) {
         final body = await response.transform(utf8.decoder).join();
-        final Map<String, dynamic> data = jsonDecode(body) as Map<String, dynamic>;
+        final dynamic decoded = jsonDecode(body);
+        final Map<String, dynamic> data = decoded is List && decoded.isNotEmpty
+            ? Map<String, dynamic>.from(decoded.first as Map)
+            : Map<String, dynamic>.from(decoded as Map);
 
-        // Handle both version.json schema and GitHub releases API schema
-        final latestVersion = (data['latest_version'] ??
-                data['tag_name'] ??
+        final releaseTag =
+            (data['release_tag'] ?? data['tag_name'])?.toString().trim();
+
+        // Extract raw version or infer semantic version from tag/title/asset name (e.g. sticko-app-1.0.5)
+        String rawVersion = (data['latest_version'] ??
                 data['version'] ??
+                data['tag_name'] ??
                 effectiveCurrentVersion)
             .toString()
             .replaceFirst(RegExp(r'^[vV]'), '')
             .trim();
+
+        if (!RegExp(r'^\d+\.\d+').hasMatch(rawVersion)) {
+          final fromTitle =
+              extractSemanticVersion(data['name']?.toString() ?? '');
+          String? fromAsset;
+          if (data['assets'] is List) {
+            for (final asset in data['assets'] as List) {
+              if (asset is Map) {
+                fromAsset =
+                    extractSemanticVersion(asset['name']?.toString() ?? '');
+                if (fromAsset != null) break;
+              }
+            }
+          }
+          rawVersion = fromAsset ?? fromTitle ?? rawVersion;
+        }
+        final latestVersion = rawVersion;
 
         final minRequired = (data['min_required_version'] ?? '1.0.0').toString();
         final title = (data['title'] ?? data['name'] ?? 'Pembaruan Sticko Tersedia').toString();
@@ -248,27 +556,28 @@ class AppUpdateService {
 
         // Extract and normalize APK download URL
         String apkUrl = defaultDirectApkUrl;
-        if (data['apk_url'] != null && data['apk_url'].toString().trim().isNotEmpty) {
+        final assetUrlFromData = _extractApkUrlFromReleaseMap(
+          data,
+          targetVersion: latestVersion,
+        );
+        if (assetUrlFromData != null) {
+          apkUrl = assetUrlFromData;
+        } else if (data['apk_url'] != null &&
+            data['apk_url'].toString().trim().isNotEmpty) {
           final rawApkUrl = data['apk_url'].toString().trim();
-          if (isDirectApkUrl(rawApkUrl)) {
-            apkUrl = rawApkUrl;
+          if (customClient == null && rawApkUrl.contains('github.com/')) {
+            final resolvedAssetUrl = await _resolveGitHubReleaseAssetApkUrl(
+              client,
+              rawUrl: rawApkUrl,
+              targetVersion: latestVersion,
+              releaseTag: releaseTag,
+            );
+            apkUrl = resolvedAssetUrl ??
+                normalizeApkUrl(rawApkUrl, targetVersion: latestVersion);
           } else {
-            // Try resolving exact .apk asset from GitHub Releases API first, else normalize URL
-            String? resolvedAssetUrl;
-            if (customClient == null && rawApkUrl.contains('github.com/')) {
-              resolvedAssetUrl = await _resolveGitHubReleaseAssetApkUrl(client);
-            }
-            apkUrl = resolvedAssetUrl ?? normalizeApkUrl(rawApkUrl);
-          }
-        } else if (data['assets'] is List && (data['assets'] as List).isNotEmpty) {
-          for (final asset in data['assets']) {
-            if (asset is Map) {
-              final assetUrl = asset['browser_download_url']?.toString() ?? '';
-              if (isDirectApkUrl(assetUrl)) {
-                apkUrl = assetUrl;
-                break;
-              }
-            }
+            apkUrl = isDirectApkUrl(rawApkUrl)
+                ? rawApkUrl
+                : normalizeApkUrl(rawApkUrl, targetVersion: latestVersion);
           }
         }
 
@@ -356,18 +665,61 @@ class AppUpdateService {
     return result;
   }
 
+  /// Open an HTTP GET request and follow up to 8 cross-host redirects
+  /// (e.g., `github.com` -> `objects.githubusercontent.com`).
+  static Future<HttpClientResponse> _openUrlFollowingRedirects(
+    HttpClient client,
+    Uri initialUri,
+  ) async {
+    Uri currentUri = initialUri;
+    late HttpClientResponse response;
+
+    for (int redirectCount = 0; redirectCount <= 8; redirectCount++) {
+      final request = await client.getUrl(currentUri);
+      request.headers.set('User-Agent', 'Sticko-App-Update-Checker');
+      request.headers.set(HttpHeaders.acceptHeader, '*/*');
+      request.followRedirects = false;
+      response = await request.close();
+
+      if (response.isRedirect ||
+          response.statusCode == HttpStatus.movedPermanently ||
+          response.statusCode == HttpStatus.found ||
+          response.statusCode == HttpStatus.seeOther ||
+          response.statusCode == HttpStatus.temporaryRedirect ||
+          response.statusCode == HttpStatus.permanentRedirect) {
+        final location = response.headers.value(HttpHeaders.locationHeader);
+        await response.drain().catchError((_) {});
+        if (location != null && location.isNotEmpty) {
+          currentUri = currentUri.resolve(location);
+          continue;
+        }
+      }
+      break;
+    }
+
+    return response;
+  }
+
   /// Download the APK directly and trigger Android Package Installer on completion.
+  /// Automatically resolves dynamic GitHub release tags (`sticko-3`, `sticko-4`, ...) and
+  /// versioned APK filenames (`sticko-app-1.0.5.apk`, `sticko-app-1.0.5`, `app-release.apk`).
   /// Calls [onProgress] with values ranging from 0.0 to 1.0 and streams progress to status bar.
   static Future<void> downloadAndInstallApk({
     required String apkUrl,
     required void Function(double progress) onProgress,
     String targetVersion = defaultCurrentVersion,
     bool showNotification = true,
+    HttpClient? customClient,
+    Directory? customSaveDirectory,
+    bool triggerInstaller = true,
   }) async {
-    final resolvedUrl = normalizeApkUrl(apkUrl);
+    final resolvedUrl = normalizeApkUrl(
+      apkUrl,
+      targetVersion: targetVersion,
+    );
 
     // If in demo/test mode with a non-direct URL, simulate download progress
-    if (!isDirectApkUrl(resolvedUrl)) {
+    if (!isDirectApkUrl(resolvedUrl) && !apkUrl.contains('github.com/')) {
       for (int i = 1; i <= 20; i++) {
         await Future.delayed(const Duration(milliseconds: 60));
         final p = i / 20.0;
@@ -388,45 +740,78 @@ class AppUpdateService {
       return;
     }
 
-    final client = HttpClient()..connectionTimeout = const Duration(seconds: 20);
+    final client = customClient ??
+        (HttpClient()..connectionTimeout = const Duration(seconds: 20));
     try {
-      Uri currentUri = Uri.parse(resolvedUrl);
-      late HttpClientResponse response;
-
-      // Follow cross-host redirects safely (e.g., github.com -> objects.githubusercontent.com)
-      for (int redirectCount = 0; redirectCount <= 8; redirectCount++) {
-        final request = await client.getUrl(currentUri);
-        request.headers.set('User-Agent', 'Sticko-App-Update-Checker');
-        request.followRedirects = false;
-        response = await request.close();
-
-        if (response.isRedirect ||
-            response.statusCode == HttpStatus.movedPermanently ||
-            response.statusCode == HttpStatus.found ||
-            response.statusCode == HttpStatus.seeOther ||
-            response.statusCode == HttpStatus.temporaryRedirect ||
-            response.statusCode == HttpStatus.permanentRedirect) {
-          final location = response.headers.value(HttpHeaders.locationHeader);
-          await response.drain().catchError((_) {});
-          if (location != null && location.isNotEmpty) {
-            currentUri = currentUri.resolve(location);
-            continue;
-          }
+      final candidateUrls = <String>[];
+      void addCandidate(String? url) {
+        if (url == null) return;
+        final u = url.trim();
+        if (u.isNotEmpty && !candidateUrls.contains(u)) {
+          candidateUrls.add(u);
         }
-        break;
       }
 
-      if (response.statusCode != 200) {
-        await response.drain().catchError((_) {});
+      // 1. If targeting GitHub Releases, query GitHub API first to get exact asset URL
+      if (apkUrl.contains('github.com/')) {
+        final apiAssetUrl = await _resolveGitHubReleaseAssetApkUrl(
+          client,
+          rawUrl: apkUrl,
+          targetVersion: targetVersion,
+        );
+        addCandidate(apiAssetUrl);
+      }
+
+      // 2. Add all normalized & fallback candidate URLs (tag-specific + latest + versioned filenames)
+      for (final candidate in buildCandidateApkUrls(
+        apkUrl,
+        targetVersion: targetVersion,
+      )) {
+        addCandidate(candidate);
+      }
+
+      HttpClientResponse? validResponse;
+      int lastStatusCode = 0;
+
+      for (final candidateUrl in candidateUrls) {
+        final uri = Uri.tryParse(candidateUrl);
+        if (uri == null) continue;
+        try {
+          final res = await _openUrlFollowingRedirects(client, uri);
+          lastStatusCode = res.statusCode;
+          final mimeType =
+              res.headers.contentType?.mimeType.toLowerCase() ?? '';
+
+          // Ensure response is 200 OK and not an HTML web page
+          if (res.statusCode == 200 && mimeType != 'text/html') {
+            validResponse = res;
+            break;
+          } else {
+            await res.drain().catchError((_) {});
+          }
+        } catch (e) {
+          debugPrint(
+            '[AppUpdateService] Candidate APK URL failed ($candidateUrl): $e',
+          );
+        }
+      }
+
+      if (validResponse == null) {
         if (showNotification) {
           await AppUpdateNotificationService().clearNotification();
         }
-        throw Exception('Server mengembalikan kode status ${response.statusCode}');
+        throw Exception(
+          'Server mengembalikan kode status ${lastStatusCode != 0 ? lastStatusCode : 404}',
+        );
       }
 
+      final response = validResponse;
       final contentLength = response.contentLength;
-      final tempDir = await getTemporaryDirectory();
-      final savePath = '${tempDir.path}/sticko_update_${targetVersion.replaceAll('+', '_')}.apk';
+      final tempDir = customSaveDirectory ?? await getTemporaryDirectory();
+      final cleanVer = cleanVersionName(targetVersion);
+      final fileVersionSuffix =
+          cleanVer.isNotEmpty ? cleanVer : targetVersion.replaceAll('+', '_');
+      final savePath = '${tempDir.path}/sticko-app-$fileVersionSuffix.apk';
       final file = File(savePath);
       if (file.existsSync()) {
         file.deleteSync();
@@ -472,9 +857,13 @@ class AppUpdateService {
       }
 
       // Trigger Android package installer prompt automatically
-      await installApkFile(savePath);
+      if (triggerInstaller) {
+        await installApkFile(savePath);
+      }
     } finally {
-      client.close();
+      if (customClient == null) {
+        client.close();
+      }
     }
   }
 
