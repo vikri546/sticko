@@ -17,6 +17,7 @@ class AppUpdateInfo {
   final String updateUrl;
   final String title;
   final String message;
+  final List<String> changelog;
   final bool isForceUpdate;
 
   const AppUpdateInfo({
@@ -26,8 +27,13 @@ class AppUpdateInfo {
     required this.updateUrl,
     this.title = 'New version available',
     this.message = 'There are new features available,\nplease update your app',
+    this.changelog = const [],
     this.isForceUpdate = false,
   });
+
+  /// Return the explicit changelog if provided, otherwise fall back to [AppUpdateService.defaultChangelog].
+  List<String> get effectiveChangelog =>
+      changelog.isNotEmpty ? changelog : AppUpdateService.defaultChangelog;
 
   /// Check whether an update is available (current < latest).
   bool get hasUpdate => AppUpdateService.isVersionOlder(currentVersion, latestVersion);
@@ -42,6 +48,13 @@ class AppUpdateInfo {
 class AppUpdateService {
   static const String defaultCurrentVersion = '1.0.5+6';
   static const String defaultReleaseTag = 'sticko-3';
+  static const List<String> defaultChangelog = [
+    'Fitur: Drag & drop penyusunan urutan stiker koleksi',
+    'Fitur: One-touch edit gambar & detail informasi stiker',
+    'Fitur: Konfirmasi tekan kembali 2x untuk keluar aplikasi',
+    'Fitur: Dukungan pengembang melalui tombol Support Me',
+    'Perbaikan: Optimalisasi unduhan pembaruan APK otomatis',
+  ];
   static const String defaultStoreUrl =
       'https://play.google.com/store/apps/details?id=com.pkri.sticko';
   static const String defaultGitHubReleasesApi =
@@ -99,6 +112,67 @@ class AppUpdateService {
   static String? extractSemanticVersion(String input) {
     final match = RegExp(r'(\d+\.\d+\.\d+(?:\+\d+)?)').firstMatch(input);
     return match?.group(1);
+  }
+
+  /// Parse update changelog bullet points from `version.json` or GitHub Release payload,
+  /// falling back to [defaultChangelog] so update details are always shown.
+  static List<String> parseChangelog(Map<String, dynamic> data) {
+    final items = <String>[];
+
+    void addRawItem(String raw, {String? prefix}) {
+      final cleaned = raw.trim().replaceFirst(RegExp(r'^[-•*]\s*'), '').trim();
+      if (cleaned.isEmpty) return;
+      final formatted = prefix != null && !cleaned.toLowerCase().startsWith(prefix.toLowerCase())
+          ? '$prefix: $cleaned'
+          : cleaned;
+      if (!items.contains(formatted)) {
+        items.add(formatted);
+      }
+    }
+
+    final rawChangelog = data['changelog'] ?? data['release_notes'];
+    if (rawChangelog is List) {
+      for (final entry in rawChangelog) {
+        if (entry != null) {
+          addRawItem(entry.toString());
+        }
+      }
+    } else if (rawChangelog is String && rawChangelog.trim().isNotEmpty) {
+      for (final line in rawChangelog.split('\n')) {
+        addRawItem(line);
+      }
+    }
+
+    if (data['features'] is List) {
+      for (final feat in data['features']) {
+        if (feat != null) {
+          addRawItem(feat.toString(), prefix: 'Fitur');
+        }
+      }
+    }
+
+    final rawBugs = data['bug_fixes'] ?? data['bugs'];
+    if (rawBugs is List) {
+      for (final bug in rawBugs) {
+        if (bug != null) {
+          addRawItem(bug.toString(), prefix: 'Perbaikan');
+        }
+      }
+    }
+
+    if (items.isEmpty && data['body'] is String) {
+      final bodyLines = (data['body'] as String).split('\n');
+      for (final line in bodyLines) {
+        final trimmed = line.trim();
+        if (trimmed.startsWith('-') ||
+            trimmed.startsWith('*') ||
+            trimmed.startsWith('•')) {
+          addRawItem(trimmed);
+        }
+      }
+    }
+
+    return items.isNotEmpty ? items : defaultChangelog;
   }
 
   /// Extract GitHub `<owner>`, `<repo>`, and optional `<tag>` from a GitHub Release URL.
@@ -582,6 +656,7 @@ class AppUpdateService {
         }
 
         final isForce = data['is_force_update'] as bool? ?? false;
+        final changelog = parseChangelog(data);
 
         final info = AppUpdateInfo(
           currentVersion: effectiveCurrentVersion,
@@ -590,6 +665,7 @@ class AppUpdateService {
           updateUrl: apkUrl,
           title: title,
           message: message,
+          changelog: changelog,
           isForceUpdate: isForce,
         );
 
@@ -883,6 +959,7 @@ class AppUpdateService {
           message: updateInfo.message,
           updateUrl: updateInfo.updateUrl,
           targetVersion: updateInfo.latestVersion,
+          changelog: updateInfo.effectiveChangelog,
         );
       } else {
         await showDialog<void>(
@@ -903,6 +980,7 @@ class AppUpdateService {
     String message = 'There are new features available,\nplease update your app',
     String updateUrl = defaultStoreUrl,
     String targetVersion = defaultCurrentVersion,
+    List<String> changelog = const [],
     VoidCallback? onUpdatePressed,
   }) async {
     return showDialog<void>(
@@ -914,6 +992,7 @@ class AppUpdateService {
         message: message,
         updateUrl: updateUrl,
         targetVersion: targetVersion,
+        changelog: changelog,
         onUpdatePressed: onUpdatePressed,
       ),
     );
@@ -973,9 +1052,11 @@ class _AutoUpdateDialogState extends State<_AutoUpdateDialog> {
   @override
   Widget build(BuildContext context) {
     final pct = (_progress * 100).clamp(0, 100).toInt();
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final changelogItems = widget.updateInfo.effectiveChangelog;
 
     return AlertDialog(
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
       title: Row(
         children: [
           const Icon(Icons.system_update_rounded, color: Color(0xFF128C7E), size: 28),
@@ -1012,6 +1093,85 @@ class _AutoUpdateDialogState extends State<_AutoUpdateDialog> {
             widget.updateInfo.message,
             style: const TextStyle(fontSize: 14, height: 1.45),
           ),
+          if (changelogItems.isNotEmpty) ...[
+            const SizedBox(height: 12),
+            Container(
+              key: const Key('update_changelog_box'),
+              width: double.infinity,
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+              decoration: BoxDecoration(
+                color: isDark
+                    ? Colors.white.withAlpha(12)
+                    : const Color(0xFFF4F6F8),
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(
+                  color: isDark
+                      ? Colors.white.withAlpha(28)
+                      : Colors.black.withAlpha(20),
+                ),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    'Informasi Pembaruan',
+                    style: TextStyle(
+                      fontSize: 12.5,
+                      fontWeight: FontWeight.w700,
+                      color: isDark ? Colors.white : Colors.black87,
+                    ),
+                  ),
+                  const SizedBox(height: 6),
+                  ConstrainedBox(
+                    constraints: const BoxConstraints(maxHeight: 150),
+                    child: SingleChildScrollView(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        mainAxisSize: MainAxisSize.min,
+                        children: changelogItems.map((item) {
+                          final cleanText = item
+                              .trim()
+                              .replaceFirst(RegExp(r'^[-•*]\s*'), '');
+                          return Padding(
+                            padding: const EdgeInsets.only(bottom: 4),
+                            child: Row(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  '- ',
+                                  style: TextStyle(
+                                    fontSize: 12.5,
+                                    height: 1.4,
+                                    fontWeight: FontWeight.w600,
+                                    color: isDark
+                                        ? Colors.white70
+                                        : Colors.black87,
+                                  ),
+                                ),
+                                Expanded(
+                                  child: Text(
+                                    cleanText,
+                                    style: TextStyle(
+                                      fontSize: 12.5,
+                                      height: 1.4,
+                                      color: isDark
+                                          ? Colors.white70
+                                          : Colors.black87,
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          );
+                        }).toList(),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
           if (_isDownloading) ...[
             const SizedBox(height: 18),
             ClipRRect(

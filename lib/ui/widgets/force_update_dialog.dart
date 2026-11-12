@@ -8,6 +8,7 @@ class ForceUpdateDialog extends StatefulWidget {
   final String message;
   final String updateUrl;
   final String targetVersion;
+  final List<String> changelog;
   final VoidCallback? onUpdatePressed;
 
   const ForceUpdateDialog({
@@ -16,6 +17,7 @@ class ForceUpdateDialog extends StatefulWidget {
     this.message = 'There are new features available,\nplease update your app',
     this.updateUrl = AppUpdateService.defaultStoreUrl,
     this.targetVersion = AppUpdateService.defaultCurrentVersion,
+    this.changelog = const [],
     this.onUpdatePressed,
   });
 
@@ -114,6 +116,43 @@ class _ForceUpdateDialogState extends State<ForceUpdateDialog> {
                         letterSpacing: -0.2,
                       ),
                     ),
+                    if (widget.changelog.isNotEmpty) ...[
+                      const SizedBox(height: 12),
+                      Container(
+                        width: double.infinity,
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 10,
+                          vertical: 8,
+                        ),
+                        decoration: BoxDecoration(
+                          color: Colors.black.withAlpha(12),
+                          borderRadius: BorderRadius.circular(10),
+                          border: Border.all(
+                            color: Colors.black.withAlpha(22),
+                          ),
+                        ),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          mainAxisSize: MainAxisSize.min,
+                          children: widget.changelog.map((item) {
+                            final clean = item
+                                .trim()
+                                .replaceFirst(RegExp(r'^[-•*]\s*'), '');
+                            return Padding(
+                              padding: const EdgeInsets.only(bottom: 3),
+                              child: Text(
+                                '- $clean',
+                                style: const TextStyle(
+                                  fontSize: 11.5,
+                                  color: Color(0xFF3C3C43),
+                                  height: 1.35,
+                                ),
+                              ),
+                            );
+                          }).toList(),
+                        ),
+                      ),
+                    ],
                     if (_errorMessage != null) ...[
                       const SizedBox(height: 8),
                       Text(

@@ -312,15 +312,21 @@ void main() {
       );
     });
 
-    test('version.json matches current app version and uses direct APK URL', () {
+    test('version.json matches current app version, uses direct APK URL, and includes changelog items', () {
       final versionFile = File('version.json');
       expect(versionFile.existsSync(), isTrue);
       final data = jsonDecode(versionFile.readAsStringSync()) as Map<String, dynamic>;
       expect(data['latest_version'], equals(AppUpdateService.defaultCurrentVersion));
       expect(AppUpdateService.isDirectApkUrl(data['apk_url'].toString()), isTrue);
+      final changelog = AppUpdateService.parseChangelog(data);
+      expect(changelog, isNotEmpty);
+      expect(changelog.any((e) => e.toLowerCase().contains('drag & drop')), isTrue);
+      expect(changelog.any((e) => e.toLowerCase().contains('one-touch')), isTrue);
+      expect(changelog.any((e) => e.toLowerCase().contains('support me')), isTrue);
+      expect(changelog.any((e) => e.toLowerCase().contains('perbaikan')), isTrue);
     });
 
-    testWidgets('HomeScreen automatically displays status bar notification and update dialog on startup', (
+    testWidgets('HomeScreen automatically displays status bar notification and update dialog with changelog box on startup', (
       WidgetTester tester,
     ) async {
       bool statusBarNotified = false;
@@ -348,6 +354,17 @@ void main() {
       expect(statusBarNotified, isTrue);
       expect(find.text('Pembaruan Sticko Tersedia'), findsOneWidget);
       expect(find.text('v1.0.3+4 → v1.0.4+5'), findsOneWidget);
+      expect(find.byKey(const Key('update_changelog_box')), findsOneWidget);
+      expect(find.text('Informasi Pembaruan'), findsOneWidget);
+      expect(find.text('- '), findsWidgets);
+      expect(
+        find.text('Fitur: Drag & drop penyusunan urutan stiker koleksi'),
+        findsOneWidget,
+      );
+      expect(
+        find.text('Perbaikan: Optimalisasi unduhan pembaruan APK otomatis'),
+        findsOneWidget,
+      );
       expect(find.text('Perbarui Sekarang'), findsOneWidget);
 
       await tester.tap(find.text('Nanti'));
