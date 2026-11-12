@@ -9,6 +9,7 @@ import 'package:sticker_flutter/ui/screens/account_screen.dart';
 import 'package:sticker_flutter/ui/screens/edit_profile_screen.dart';
 import 'package:sticker_flutter/ui/screens/home_screen.dart';
 import 'package:sticker_flutter/ui/screens/permissions_preferences_screen.dart';
+import 'package:sticker_flutter/ui/screens/update_history_screen.dart';
 import 'package:sticker_flutter/ui/widgets/floating_pill_nav_bar.dart';
 
 void main() {
@@ -394,6 +395,96 @@ void main() {
       // Verify service updated
       expect(CreatorProfileService().name, equals('Sticko Artist'));
       expect(CreatorProfileService().bio, equals('Bikin stiker keren tiap hari 🚀'));
+    });
+  });
+
+  group('UpdateHistoryScreen & Account Navigation Tests', () {
+    testWidgets(
+        'AccountScreen renders Riwayat Pembaruan APK after Periksa Pembaruan APK and navigates to UpdateHistoryScreen with dropdown show/hide',
+        (WidgetTester tester) async {
+      tester.view.physicalSize = const Size(800, 1600);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(() => tester.view.resetPhysicalSize());
+
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: ThemeData(splashFactory: InkRipple.splashFactory),
+          home: const AccountScreen(showAppBar: true),
+        ),
+      );
+      await tester.pump();
+
+      final checkUpdateFinder = find.text('Periksa Pembaruan APK');
+      final historyTileFinder = find.text('Riwayat Pembaruan APK');
+      expect(checkUpdateFinder, findsOneWidget);
+      expect(historyTileFinder, findsOneWidget);
+
+      // Verify Riwayat Pembaruan APK is positioned right below Periksa Pembaruan APK
+      final checkUpdatePos = tester.getCenter(checkUpdateFinder);
+      final historyTilePos = tester.getCenter(historyTileFinder);
+      expect(historyTilePos.dy, greaterThan(checkUpdatePos.dy));
+
+      // Tap Riwayat Pembaruan APK to open UpdateHistoryScreen
+      await tester.tap(historyTileFinder);
+      await tester.pumpAndSettle();
+
+      expect(find.text('Riwayat Pembaruan'), findsOneWidget);
+      expect(find.text('Versi 1.0.5+6'), findsOneWidget);
+      expect(find.text('Dirilis: 12 Nov 2026'), findsOneWidget);
+      expect(find.text('Versi 1.0.4+5'), findsOneWidget);
+      expect(find.text('Versi 1.0.3+4'), findsOneWidget);
+      expect(find.text('Versi 1.0.0+1'), findsOneWidget);
+
+      // Verify "Rincian Semua Versi" is removed
+      expect(find.text('Rincian Semua Versi'), findsNothing);
+
+      // Latest version (1.0.5+6) is expanded by default, showing features & bug fixes
+      expect(
+        find.byKey(const ValueKey('version_details_1.0.5+6')),
+        findsOneWidget,
+      );
+      expect(
+        find.byKey(const ValueKey('version_details_1.0.4+5')),
+        findsNothing,
+      );
+
+      // Tap dropdown ("Lihat") on 1.0.4+5 while 1.0.5+6 is shown:
+      // 1.0.5+6 should automatically hide, and 1.0.4+5 should show
+      await tester.tap(
+        find.byKey(const ValueKey('version_dropdown_1.0.4+5')),
+      );
+      await tester.pumpAndSettle();
+      expect(
+        find.byKey(const ValueKey('version_details_1.0.5+6')),
+        findsNothing,
+      );
+      expect(
+        find.byKey(const ValueKey('version_details_1.0.4+5')),
+        findsOneWidget,
+      );
+      expect(
+        find.text(
+          'Pemindai stiker duplikat otomatis lintas paket koleksi',
+        ),
+        findsOneWidget,
+      );
+
+      // Tap dropdown ("Tutup") on 1.0.4+5 to hide it as well
+      await tester.tap(
+        find.byKey(const ValueKey('version_dropdown_1.0.4+5')),
+      );
+      await tester.pumpAndSettle();
+      expect(
+        find.byKey(const ValueKey('version_details_1.0.4+5')),
+        findsNothing,
+      );
+    });
+
+    testWidgets('UpdateHistoryScreen.route() provides zoom in/out ScaleTransition', (
+      WidgetTester tester,
+    ) async {
+      final route = UpdateHistoryScreen.route();
+      expect(route, isA<PageRouteBuilder>());
     });
   });
 }

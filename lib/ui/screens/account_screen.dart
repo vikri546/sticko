@@ -14,6 +14,7 @@ import 'package:sticker_flutter/ui/screens/permissions_preferences_screen.dart';
 import 'package:sticker_flutter/ui/screens/whatsapp_connection_screen.dart';
 import 'package:sticker_flutter/ui/screens/cloud_backup_screen.dart';
 import 'package:sticker_flutter/ui/screens/duplicate_stickers_screen.dart';
+import 'package:sticker_flutter/ui/screens/update_history_screen.dart';
 import 'package:sticker_flutter/ui/widgets/app_notification.dart';
 import 'package:sticker_flutter/ui/widgets/social_media_buttons.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -182,6 +183,13 @@ class _AccountScreenState extends State<AccountScreen> {
             style: const TextStyle(fontSize: 14, height: 1.45),
           ),
           actions: [
+            TextButton(
+              onPressed: () {
+                Navigator.of(ctx).pop();
+                Navigator.of(context).push(UpdateHistoryScreen.route());
+              },
+              child: const Text('Riwayat Update'),
+            ),
             FilledButton(
               style: FilledButton.styleFrom(
                 backgroundColor: const Color(0xFF128C7E),
@@ -431,6 +439,16 @@ class _AccountScreenState extends State<AccountScreen> {
                           )
                         : null,
                     onTap: _isCheckingUpdate ? null : _checkForUpdate,
+                  ),
+                  Divider(height: 1, indent: 20, endIndent: 20, color: isDark ? const Color(0x24FFFFFF) : const Color(0x1F000000)),
+                  _SettingsListTile(
+                    title: 'Riwayat Pembaruan APK',
+                    subtitle: 'Catatan rilis, fitur baru, & perbaikan di setiap versi',
+                    onTap: () {
+                      Navigator.of(context).push(
+                        UpdateHistoryScreen.route(),
+                      );
+                    },
                   ),
                   Divider(height: 1, indent: 20, endIndent: 20, color: isDark ? const Color(0x24FFFFFF) : const Color(0x1F000000)),
                   _SettingsListTile(

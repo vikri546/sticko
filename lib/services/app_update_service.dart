@@ -43,6 +43,46 @@ class AppUpdateInfo {
       isForceUpdate || AppUpdateService.isVersionOlder(currentVersion, minRequiredVersion);
 }
 
+/// Model representing a single application version release entry for the Update History screen.
+class AppVersionRelease {
+  final String version;
+  final String releaseTag;
+  final String releaseDate;
+  final List<String> features;
+  final List<String> bugFixes;
+  final bool isLatest;
+
+  const AppVersionRelease({
+    required this.version,
+    required this.releaseTag,
+    required this.releaseDate,
+    required this.features,
+    required this.bugFixes,
+    this.isLatest = false,
+  });
+
+  factory AppVersionRelease.fromJson(
+    Map<String, dynamic> json, {
+    bool isLatest = false,
+  }) {
+    final rawFeatures = json['features'];
+    final rawBugs = json['bug_fixes'] ?? json['bugs'];
+
+    return AppVersionRelease(
+      version: (json['version'] ?? '').toString(),
+      releaseTag: (json['release_tag'] ?? json['tag'] ?? '').toString(),
+      releaseDate: (json['date'] ?? json['release_date'] ?? '-').toString(),
+      features: rawFeatures is List
+          ? rawFeatures.map((e) => e.toString()).toList()
+          : const [],
+      bugFixes: rawBugs is List
+          ? rawBugs.map((e) => e.toString()).toList()
+          : const [],
+      isLatest: (json['is_latest'] as bool?) ?? isLatest,
+    );
+  }
+}
+
 /// Service that handles app version comparison, remote check, status bar notifications,
 /// and automatic APK download & installation.
 class AppUpdateService {
@@ -54,6 +94,68 @@ class AppUpdateService {
     'Fitur: Konfirmasi tekan kembali 2x untuk keluar aplikasi',
     'Fitur: Dukungan pengembang melalui tombol Support Me',
     'Perbaikan: Optimalisasi unduhan pembaruan APK otomatis',
+  ];
+
+  /// Complete chronological release history across Sticko APK versions.
+  static const List<AppVersionRelease> defaultVersionHistory = [
+    AppVersionRelease(
+      version: '1.0.5+6',
+      releaseTag: 'sticko-3',
+      releaseDate: '12 Nov 2026',
+      isLatest: true,
+      features: [
+        'Drag & drop penyusunan urutan stiker pada koleksi (tahan 1,5 detik)',
+        'One-touch klik stiker untuk edit gambar & melihat detail informasi stiker',
+        'Konfirmasi tekan tombol kembali 2 kali untuk keluar dari aplikasi',
+        'Halaman Riwayat Pembaruan APK & tombol Support Me untuk dukungan pengembang',
+      ],
+      bugFixes: [
+        'Perbaikan sistem unduhan & pembaruan otomatis APK dari GitHub Releases',
+        'Validasi sinyal & kuota internet saat menambahkan stiker ke WhatsApp',
+        'Menjaga keutuhan format WebP stiker saat pengurutan agar bebas duplikat',
+      ],
+    ),
+    AppVersionRelease(
+      version: '1.0.4+5',
+      releaseTag: 'sticko-2',
+      releaseDate: '04 Nov 2026',
+      features: [
+        'Pemeriksaan pembaruan APK otomatis & notifikasi langsung di bilah status',
+        'Pemindai stiker duplikat otomatis lintas paket koleksi',
+        'Tautan media sosial kreator dengan perlindungan privasi konfigurasi',
+      ],
+      bugFixes: [
+        'Perbaikan sinkronisasi versi paket stiker saat diperbarui ke WhatsApp',
+        'Optimalisasi kompresi ukuran berkas WebP agar selalu di bawah 100 KB',
+      ],
+    ),
+    AppVersionRelease(
+      version: '1.0.3+4',
+      releaseTag: 'sticko-1',
+      releaseDate: '25 Okt 2026',
+      features: [
+        'Dukungan pembuatan paket stiker animasi (GIF & Video maks 10 detik)',
+        'Editor stiker interaktif: Fit/Penuh/Bulat, Putar, Mirror, Zoom, & Teks Meme',
+        'Cadangan & pemulihan koleksi paket stiker dalam format arsip ZIP',
+      ],
+      bugFixes: [
+        'Perbaikan transparansi latar belakang kanvas stiker 512 × 512 px',
+        'Penanganan izin akses galeri foto dan kamera pada Android 13 & 14',
+      ],
+    ),
+    AppVersionRelease(
+      version: '1.0.0+1',
+      releaseTag: 'v1.0.0',
+      releaseDate: '10 Okt 2026',
+      features: [
+        'Pembuatan paket stiker statis kustom untuk WhatsApp & WhatsApp Business',
+        'Pemilihan banyak gambar sekaligus (multi-image picker) dari galeri',
+        'Halaman Koleksi Kreator, manajemen perizinan, dan pembersihan cache',
+      ],
+      bugFixes: [
+        'Stabilitas ContentProvider untuk registrasi paket stiker ke WhatsApp',
+      ],
+    ),
   ];
   static const String defaultStoreUrl =
       'https://play.google.com/store/apps/details?id=com.pkri.sticko';
