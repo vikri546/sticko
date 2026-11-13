@@ -1,8 +1,10 @@
 import 'dart:convert';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:sticker_flutter/services/whatsapp_stickers_service.dart';
 
 void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
   group('StickerPack WhatsApp Rule Tests', () {
     test('Pack with less than 3 stickers cannot be added to WhatsApp', () {
       final pack0 = const StickerPack(
@@ -94,6 +96,50 @@ void main() {
       expect(restoredPack.stickers.length, equals(3));
       expect(restoredPack.stickers[0].emojis, equals(['🔥', '🎉']));
       expect(restoredPack.canAddToWhatsApp, isTrue);
+    });
+
+    test(
+        'addStickerPack and isStickerPackAdded do not hardcode WhatsApp Original by default so system chooser handles Original, Business, and Clones',
+        () async {
+      const channel = MethodChannel('com.pkri.sticko/stickers');
+      Map<dynamic, dynamic>? capturedAddArgs;
+      Map<dynamic, dynamic>? capturedCheckArgs;
+
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(channel, (MethodCall call) async {
+        if (call.method == 'addStickerPack') {
+          capturedAddArgs = call.arguments as Map<dynamic, dynamic>?;
+          return {'status': 'success', 'message': 'Added via system chooser'};
+        }
+        if (call.method == 'isStickerPackAdded') {
+          capturedCheckArgs = call.arguments as Map<dynamic, dynamic>?;
+          return true;
+        }
+        return null;
+      });
+      addTearDown(() {
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+            .setMockMethodCallHandler(channel, null);
+      });
+
+      final addResult = await WhatsAppStickersService.addStickerPack(
+        identifier: 'pack_multi_wa',
+        name: 'Stiker Multi WA',
+      );
+      expect(addResult['status'], equals('success'));
+      expect(capturedAddArgs, isNotNull);
+      expect(capturedAddArgs!['identifier'], equals('pack_multi_wa'));
+      expect(capturedAddArgs!['name'], equals('Stiker Multi WA'));
+      expect(capturedAddArgs!.containsKey('isBusiness'), isFalse);
+      expect(capturedAddArgs!.containsKey('targetPackage'), isFalse);
+
+      final isAdded =
+          await WhatsAppStickersService.isStickerPackAdded('pack_multi_wa');
+      expect(isAdded, isTrue);
+      expect(capturedCheckArgs, isNotNull);
+      expect(capturedCheckArgs!['identifier'], equals('pack_multi_wa'));
+      expect(capturedCheckArgs!.containsKey('isBusiness'), isFalse);
+      expect(capturedCheckArgs!.containsKey('targetPackage'), isFalse);
     });
   });
 }

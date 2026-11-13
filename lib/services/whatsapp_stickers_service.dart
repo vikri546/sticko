@@ -358,26 +358,34 @@ class WhatsAppStickersService {
   }
 
   /// Check if a specific sticker pack is already added/whitelisted in WhatsApp.
+  /// When [isBusiness] and [targetPackage] are omitted, checks across all installed
+  /// WhatsApp variants (Original, Business, and Clones).
   static Future<bool> isStickerPackAdded(
     String identifier, {
-    bool isBusiness = false,
+    bool? isBusiness,
+    String? targetPackage,
   }) async {
     final bool? isAdded = await _channel.invokeMethod<bool>(
       'isStickerPackAdded',
       {
         'identifier': identifier,
-        'isBusiness': isBusiness,
+        'isBusiness': ?isBusiness,
+        'targetPackage': ?targetPackage,
       },
     );
     return isAdded ?? false;
   }
 
   /// Launch intent to add the sticker pack to WhatsApp.
+  /// When [targetPackage] and [isBusiness] are omitted (default), opens the phone's
+  /// native Android bottom chooser modal so the user can pick WhatsApp Original,
+  /// WhatsApp Business, or any Duplicate/Cloned WhatsApp app.
   /// Returns a map with 'status' ('success', 'error', 'cancelled') and 'message'.
   static Future<Map<String, dynamic>> addStickerPack({
     required String identifier,
     required String name,
-    bool isBusiness = false,
+    bool? isBusiness,
+    String? targetPackage,
   }) async {
     final Map<dynamic, dynamic>? result =
         await _channel.invokeMethod<Map<dynamic, dynamic>>(
@@ -385,7 +393,8 @@ class WhatsAppStickersService {
       {
         'identifier': identifier,
         'name': name,
-        'isBusiness': isBusiness,
+        'isBusiness': ?isBusiness,
+        'targetPackage': ?targetPackage,
       },
     );
 

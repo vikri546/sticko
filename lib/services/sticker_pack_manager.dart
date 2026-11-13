@@ -590,9 +590,12 @@ class StickerPackManager extends ChangeNotifier {
 
   /// Send or update the pack in WhatsApp.
   /// Automatically optimizes oversized stickers to ensure compliance with WhatsApp limits.
+  /// When [isBusiness] and [targetPackage] are omitted, opens the phone's default
+  /// Android bottom chooser modal so the user can choose WhatsApp Original, Business, or Clones.
   Future<Map<String, dynamic>> sendPackToWhatsApp(
     String packIdentifier, {
-    bool isBusiness = false,
+    bool? isBusiness,
+    String? targetPackage,
   }) async {
     final pack = getPack(packIdentifier);
     if (pack == null) {
@@ -644,6 +647,7 @@ class StickerPackManager extends ChangeNotifier {
       identifier: refreshedPack.identifier,
       name: refreshedPack.name,
       isBusiness: isBusiness,
+      targetPackage: targetPackage,
     );
 
     if (result['status'] == 'success') {

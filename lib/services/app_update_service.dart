@@ -86,9 +86,10 @@ class AppVersionRelease {
 /// Service that handles app version comparison, remote check, status bar notifications,
 /// and automatic APK download & installation.
 class AppUpdateService {
-  static const String defaultCurrentVersion = '1.0.5+6';
-  static const String defaultReleaseTag = 'sticko-3';
+  static const String defaultCurrentVersion = '1.0.6+7';
+  static const String defaultReleaseTag = 'sticko-4';
   static const List<String> defaultChangelog = [
+    'Fitur: Pilihan aplikasi WhatsApp (Original, Business, & Duplikat) saat menambahkan stiker',
     'Fitur: Drag & drop penyusunan urutan stiker koleksi',
     'Fitur: One-touch edit gambar & detail informasi stiker',
     'Fitur: Konfirmasi tekan kembali 2x untuk keluar aplikasi',
@@ -99,10 +100,24 @@ class AppUpdateService {
   /// Complete chronological release history across Sticko APK versions.
   static const List<AppVersionRelease> defaultVersionHistory = [
     AppVersionRelease(
+      version: '1.0.6+7',
+      releaseTag: 'sticko-4',
+      releaseDate: '13 Nov 2026',
+      isLatest: true,
+      features: [
+        'Modal konfirmasi bawaan handphone untuk memilih aplikasi WhatsApp (Original, Business, maupun Duplikat/Klon) saat menambahkan stiker',
+        'Halaman Riwayat Pembaruan APK dengan gaya visual kaca cair (Liquid Glass) & sistem dropdown akordeon',
+      ],
+      bugFixes: [
+        'Perbaikan pembatasan paket yang sebelumnya hanya mengarah ke WhatsApp Original saja',
+        'Pemberian izin URI ContentProvider otomatis untuk WhatsApp Business dan aplikasi WhatsApp Duplikat/Klon',
+      ],
+    ),
+    AppVersionRelease(
       version: '1.0.5+6',
       releaseTag: 'sticko-3',
       releaseDate: '12 Nov 2026',
-      isLatest: true,
+      isLatest: false,
       features: [
         'Drag & drop penyusunan urutan stiker pada koleksi (tahan 1,5 detik)',
         'One-touch klik stiker untuk edit gambar & melihat detail informasi stiker',
@@ -166,7 +181,7 @@ class AppUpdateService {
   static const String defaultUpdateCheckUrl =
       'https://raw.githubusercontent.com/vikri546/sticko/main/version.json';
   static const String defaultDirectApkUrl =
-      'https://github.com/vikri546/sticko/releases/download/sticko-3/sticko-app-1.0.5.apk';
+      'https://github.com/vikri546/sticko/releases/download/sticko-4/sticko-app-1.0.6.apk';
 
   static bool _isDialogShowing = false;
 

@@ -74,8 +74,18 @@
         <package android:name="com.yowhatsapp" />
         <package android:name="com.aero" />
         <package android:name="com.ogwhatsapp" />
+        <package android:name="com.mbwhatsapp" />
+        <package android:name="com.fouadmods.whatsapp" />
         <provider android:authorities="com.whatsapp.provider.sticker_whitelist_check" />
         <provider android:authorities="com.whatsapp.w4b.provider.sticker_whitelist_check" />
+        <provider android:authorities="com.gbwhatsapp.provider.sticker_whitelist_check" />
+        <provider android:authorities="com.whatsapp.plus.provider.sticker_whitelist_check" />
+        <provider android:authorities="com.fmwhatsapp.provider.sticker_whitelist_check" />
+        <provider android:authorities="com.yowhatsapp.provider.sticker_whitelist_check" />
+        <provider android:authorities="com.aero.provider.sticker_whitelist_check" />
+        <provider android:authorities="com.ogwhatsapp.provider.sticker_whitelist_check" />
+        <provider android:authorities="com.mbwhatsapp.provider.sticker_whitelist_check" />
+        <provider android:authorities="com.fouadmods.whatsapp.provider.sticker_whitelist_check" />
         <intent>
             <action android:name="android.intent.action.VIEW" />
             <data android:scheme="whatsapp" />

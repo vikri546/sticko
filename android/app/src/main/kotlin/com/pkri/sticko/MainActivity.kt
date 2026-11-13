@@ -38,13 +38,29 @@ class MainActivity : FlutterActivity() {
         private const val EXTRA_STICKER_PACK_ID = "sticker_pack_id"
         private const val EXTRA_STICKER_PACK_AUTHORITY = "sticker_pack_authority"
         private const val EXTRA_STICKER_PACK_NAME = "sticker_pack_name"
+        private const val ACTION_ENABLE_STICKER_PACK = "com.whatsapp.intent.action.ENABLE_STICKER_PACK"
 
         private const val WHATSAPP_PACKAGE = "com.whatsapp"
         private const val WHATSAPP_BUSINESS_PACKAGE = "com.whatsapp.w4b"
         private const val WHITELIST_PROVIDER_SUFFIX = ".provider.sticker_whitelist_check"
+
+        private val ALL_WHATSAPP_PACKAGES = listOf(
+            WHATSAPP_PACKAGE,
+            WHATSAPP_BUSINESS_PACKAGE,
+            "com.gbwhatsapp",
+            "com.whatsapp.plus",
+            "com.fmwhatsapp",
+            "com.yowhatsapp",
+            "com.aero",
+            "com.ogwhatsapp",
+            "com.mbwhatsapp",
+            "com.fouadmods.whatsapp"
+        )
     }
 
     private var pendingAddResult: MethodChannel.Result? = null
+    private var pendingPackIdentifier: String? = null
+    private var previouslyWhitelistedPackages: Set<String> = emptySet()
     private var updateNotificationChannel: MethodChannel? = null
     private var pendingNotificationPayload: Map<String, String>? = null
     private var exitToast: Toast? = null
@@ -247,38 +263,67 @@ class MainActivity : FlutterActivity() {
 
                 "isStickerPackAdded" -> {
                     val identifier = call.argument<String>("identifier")
-                    val isBusiness = call.argument<Boolean>("isBusiness") ?: false
+                    val explicitTargetPkg = call.argument<String>("targetPackage")
+                    val isBusiness = call.argument<Boolean>("isBusiness")
                     if (identifier == null) {
                         result.error("INVALID_ARGUMENT", "Identifier cannot be null", null)
                         return@setMethodCallHandler
                     }
-                    val targetPkg = if (isBusiness) WHATSAPP_BUSINESS_PACKAGE else WHATSAPP_PACKAGE
-                    val isAdded = isWhitelisted(identifier, targetPkg)
+                    val isAdded = when {
+                        !explicitTargetPkg.isNullOrBlank() -> isWhitelisted(identifier, explicitTargetPkg)
+                        isBusiness == true -> isWhitelisted(identifier, WHATSAPP_BUSINESS_PACKAGE)
+                        else -> isWhitelistedInAnyWhatsApp(identifier)
+                    }
                     result.success(isAdded)
                 }
 
                 "addStickerPack" -> {
                     val identifier = call.argument<String>("identifier")
                     val name = call.argument<String>("name")
-                    val isBusiness = call.argument<Boolean>("isBusiness") ?: false
-                    val targetPkg = if (isBusiness) WHATSAPP_BUSINESS_PACKAGE else WHATSAPP_PACKAGE
+                    val explicitTargetPkg = call.argument<String>("targetPackage")
+                    val isBusiness = call.argument<Boolean>("isBusiness")
 
                     if (identifier == null || name == null) {
                         result.error("INVALID_ARGUMENT", "Identifier and name are required", null)
                         return@setMethodCallHandler
                     }
 
-                    if (!isPackageInstalled(targetPkg)) {
+                    // Only restrict to a single package if explicitly requested;
+                    // by default (targetPkg == null), open the phone's default bottom chooser modal
+                    // so the user can choose WhatsApp Original, WhatsApp Business, or Duplicate/Clones.
+                    val targetPkg: String? = when {
+                        !explicitTargetPkg.isNullOrBlank() -> explicitTargetPkg
+                        isBusiness == true -> WHATSAPP_BUSINESS_PACKAGE
+                        else -> null
+                    }
+
+                    if (targetPkg != null) {
+                        if (!isPackageInstalled(targetPkg)) {
+                            result.success(
+                                mapOf(
+                                    "status" to "error",
+                                    "message" to if (targetPkg == WHATSAPP_BUSINESS_PACKAGE) {
+                                        "WhatsApp Business belum terpasang di HP ini"
+                                    } else {
+                                        "Aplikasi WhatsApp tujuan ($targetPkg) belum terpasang di HP ini"
+                                    }
+                                )
+                            )
+                            return@setMethodCallHandler
+                        }
+                    } else if (!hasAnyWhatsAppOrStickerHandler(identifier, name)) {
                         result.success(
                             mapOf(
                                 "status" to "error",
-                                "message" to if (isBusiness) "WhatsApp Business belum terpasang di HP ini" else "WhatsApp belum terpasang di HP ini"
+                                "message" to "Tidak ada aplikasi WhatsApp (Original, Business, atau Duplikat) yang terpasang di HP ini"
                             )
                         )
                         return@setMethodCallHandler
                     }
 
                     pendingAddResult = result
+                    pendingPackIdentifier = identifier
+                    previouslyWhitelistedPackages = getWhitelistedPackages(identifier)
                     launchAddPackIntent(identifier, name, targetPkg)
                 }
 
@@ -421,32 +466,163 @@ class MainActivity : FlutterActivity() {
             }
             false
         } catch (e: Exception) {
-            Log.w(TAG, "Failed to check sticker whitelist status", e)
+            Log.w(TAG, "Failed to check sticker whitelist status for $targetPackage", e)
             false
         }
     }
 
-    private fun launchAddPackIntent(identifier: String, name: String, targetPackage: String) {
-        val authority = "${context.packageName}.stickercontentprovider"
-        val intent = Intent("com.whatsapp.intent.action.ENABLE_STICKER_PACK").apply {
-            setPackage(targetPackage)
+    private fun isWhitelistedInAnyWhatsApp(identifier: String): Boolean {
+        for (pkg in ALL_WHATSAPP_PACKAGES) {
+            if (isPackageInstalled(pkg) && isWhitelisted(identifier, pkg)) {
+                return true
+            }
+        }
+        return false
+    }
+
+    private fun getWhitelistedPackages(identifier: String): Set<String> {
+        val whitelisted = mutableSetOf<String>()
+        for (pkg in ALL_WHATSAPP_PACKAGES) {
+            if (isPackageInstalled(pkg) && isWhitelisted(identifier, pkg)) {
+                whitelisted.add(pkg)
+            }
+        }
+        return whitelisted
+    }
+
+    private fun createStickerPackIntent(
+        identifier: String,
+        name: String,
+        authority: String,
+        targetPackage: String? = null
+    ): Intent {
+        return Intent(ACTION_ENABLE_STICKER_PACK).apply {
+            if (!targetPackage.isNullOrBlank()) {
+                setPackage(targetPackage)
+            }
             putExtra(EXTRA_STICKER_PACK_ID, identifier)
             putExtra(EXTRA_STICKER_PACK_AUTHORITY, authority)
             putExtra(EXTRA_STICKER_PACK_NAME, name)
-            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_PREFIX_URI_PERMISSION)
+        }
+    }
+
+    private fun hasAnyWhatsAppOrStickerHandler(identifier: String, name: String): Boolean {
+        val authority = "${context.packageName}.stickercontentprovider"
+        val baseIntent = createStickerPackIntent(identifier, name, authority, null)
+        val resolved = try {
+            packageManager.queryIntentActivities(baseIntent, 0)
+        } catch (_: Exception) {
+            emptyList()
+        }
+        if (resolved.isNotEmpty()) return true
+        return ALL_WHATSAPP_PACKAGES.any { isPackageInstalled(it) }
+    }
+
+    private fun grantStickerUriPermissionsToWhatsAppApps(authority: String, baseIntent: Intent) {
+        val candidatePackages = mutableSetOf<String>()
+        candidatePackages.addAll(ALL_WHATSAPP_PACKAGES.filter { isPackageInstalled(it) })
+        try {
+            val resolvedActivities = packageManager.queryIntentActivities(baseIntent, 0)
+            for (info in resolvedActivities) {
+                info.activityInfo?.packageName?.let { candidatePackages.add(it) }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to query sticker intent activities for URI grant", e)
         }
 
+        val providerUri = Uri.parse("content://$authority")
+        val flags = Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_PREFIX_URI_PERMISSION
+        for (pkg in candidatePackages) {
+            try {
+                grantUriPermission(pkg, providerUri, flags)
+            } catch (_: Exception) {
+                // Ignore if package does not exist in current user profile
+            }
+        }
+    }
+
+    private fun buildWhatsAppChooserIntent(
+        identifier: String,
+        name: String,
+        authority: String,
+        baseIntent: Intent
+    ): Intent {
+        val chooserIntent = Intent.createChooser(
+            baseIntent,
+            "Tambahkan paket stiker ke WhatsApp"
+        )
+
         try {
-            startActivityForResult(intent, ADD_PACK_REQUEST_CODE)
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to start WhatsApp sticker intent", e)
-            pendingAddResult?.success(
-                mapOf(
-                    "status" to "error",
-                    "message" to "Gagal membuka WhatsApp: ${e.localizedMessage}"
+            val resolvedPackages = packageManager.queryIntentActivities(baseIntent, 0)
+                .mapNotNull { it.activityInfo?.packageName }
+                .toSet()
+
+            val extraIntents = mutableListOf<Intent>()
+            for (pkg in ALL_WHATSAPP_PACKAGES) {
+                if (pkg !in resolvedPackages && isPackageInstalled(pkg)) {
+                    val pkgIntent = createStickerPackIntent(identifier, name, authority, pkg)
+                    val pkgResolved = packageManager.queryIntentActivities(pkgIntent, 0)
+                    if (pkgResolved.isNotEmpty()) {
+                        extraIntents.add(pkgIntent)
+                    }
+                }
+            }
+
+            if (extraIntents.isNotEmpty()) {
+                chooserIntent.putExtra(
+                    Intent.EXTRA_INITIAL_INTENTS,
+                    extraIntents.toTypedArray()
                 )
-            )
-            pendingAddResult = null
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not attach extra clone intents to chooser", e)
+        }
+
+        return chooserIntent
+    }
+
+    private fun launchAddPackIntent(
+        identifier: String,
+        name: String,
+        targetPackage: String? = null
+    ) {
+        val authority = "${context.packageName}.stickercontentprovider"
+        val baseIntent = createStickerPackIntent(identifier, name, authority, targetPackage)
+
+        // Grant read access on StickerContentProvider to all installed WhatsApp variants & clones
+        grantStickerUriPermissionsToWhatsAppApps(authority, baseIntent)
+
+        try {
+            if (targetPackage.isNullOrBlank()) {
+                // Show the phone's default bottom chooser modal so the user can choose
+                // between WhatsApp Original, WhatsApp Business, Dual Apps, or Clones
+                val chooserIntent = buildWhatsAppChooserIntent(
+                    identifier,
+                    name,
+                    authority,
+                    baseIntent
+                )
+                startActivityForResult(chooserIntent, ADD_PACK_REQUEST_CODE)
+            } else {
+                startActivityForResult(baseIntent, ADD_PACK_REQUEST_CODE)
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to start WhatsApp sticker chooser/intent, retrying direct intent", e)
+            try {
+                startActivityForResult(baseIntent, ADD_PACK_REQUEST_CODE)
+            } catch (e2: Exception) {
+                Log.e(TAG, "Failed to start fallback WhatsApp sticker intent", e2)
+                pendingPackIdentifier = null
+                previouslyWhitelistedPackages = emptySet()
+                pendingAddResult?.success(
+                    mapOf(
+                        "status" to "error",
+                        "message" to "Gagal membuka WhatsApp: ${e2.localizedMessage}"
+                    )
+                )
+                pendingAddResult = null
+            }
         }
     }
 
@@ -455,7 +631,11 @@ class MainActivity : FlutterActivity() {
 
         if (requestCode == ADD_PACK_REQUEST_CODE) {
             val result = pendingAddResult ?: return
+            val packId = pendingPackIdentifier
+            val beforePackages = previouslyWhitelistedPackages
             pendingAddResult = null
+            pendingPackIdentifier = null
+            previouslyWhitelistedPackages = emptySet()
 
             when (resultCode) {
                 Activity.RESULT_OK -> {
@@ -478,12 +658,28 @@ class MainActivity : FlutterActivity() {
                             )
                         )
                     } else {
-                        result.success(
-                            mapOf(
-                                "status" to "cancelled",
-                                "message" to "Penambahan stiker dibatalkan oleh pengguna."
+                        // Some OEM system choosers / Dual App bridges return RESULT_CANCELED
+                        // even when the pack was successfully added inside the chosen WhatsApp app.
+                        val afterPackages = if (packId != null) {
+                            getWhitelistedPackages(packId)
+                        } else {
+                            emptySet()
+                        }
+                        if ((afterPackages - beforePackages).isNotEmpty()) {
+                            result.success(
+                                mapOf(
+                                    "status" to "success",
+                                    "message" to "Paket stiker berhasil ditambahkan ke WhatsApp!"
+                                )
                             )
-                        )
+                        } else {
+                            result.success(
+                                mapOf(
+                                    "status" to "cancelled",
+                                    "message" to "Penambahan stiker dibatalkan oleh pengguna."
+                                )
+                            )
+                        }
                     }
                 }
 
@@ -564,7 +760,7 @@ class MainActivity : FlutterActivity() {
     private fun getCurrentInstalledVersion(): String {
         return try {
             val pInfo = packageManager.getPackageInfo(packageName, 0)
-            val vName = pInfo.versionName ?: "1.0.3"
+            val vName = pInfo.versionName ?: "1.0.6"
             val vCode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
                 pInfo.longVersionCode
             } else {
@@ -573,7 +769,7 @@ class MainActivity : FlutterActivity() {
             }
             "$vName+$vCode"
         } catch (e: Exception) {
-            "1.0.3+4"
+            "1.0.6+7"
         }
     }
 
