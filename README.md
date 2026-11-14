@@ -18,6 +18,7 @@
 <p>
   <a href="#download">Download</a> &middot;
   <a href="#features">Features</a> &middot;
+  <a href="#preview">Preview</a> &middot;
   <a href="#tech-stack">Tech Stack</a> &middot;
   <a href="#getting-started">Getting Started</a> &middot;
   <a href="#project-structure">Structure</a> &middot;
@@ -39,6 +40,38 @@ Download the latest APK directly from [GitHub Releases](https://github.com/vikri
 - **Multi-Client WhatsApp Export:** Native Android chooser via [`StickerContentProvider`](android/app/src/main/kotlin/com/pkri/sticko/StickerContentProvider.kt) supporting WhatsApp, WhatsApp Business, Dual Apps, and cloned clients.
 - **Backup & Maintenance:** Cross-pack duplicate detection, local ZIP archive backup/restore, and cache cleanup.
 - **OTA App Updates:** Automated version checks, changelog previews, and status-bar APK downloads powered by [GitHub Releases](https://github.com/vikri546/sticko/releases).
+
+## Preview
+
+### Sticker Creation & Pack Studio
+
+| Explore | Pack Workspace | Batch WebP Import (30x) | Pack Ready (30/30) |
+| :---: | :---: | :---: | :---: |
+| <img src="lib/images/assets/Screenshot_2026-11-14-06-56-48-801_com.pkri.sticko-edit.jpg" width="185" alt="Explore Screen" /> | <img src="lib/images/assets/Screenshot_2026-11-14-06-57-47-721_com.pkri.sticko-edit.jpg" width="185" alt="Pack Workspace" /> | <img src="lib/images/assets/Screenshot_2026-11-14-07-01-40-909_com.pkri.sticko-edit.jpg" width="185" alt="Batch WebP Import" /> | <img src="lib/images/assets/Screenshot_2026-11-14-07-02-51-475_com.pkri.sticko-edit.jpg" width="185" alt="Pack Ready" /> |
+
+| Create Pack Dialog | Media Source Picker | Export Confirmation |
+| :---: | :---: | :---: |
+| <img src="lib/images/assets/Screenshot_2026-11-14-06-57-27-478_com.pkri.sticko-edit.jpg" width="210" alt="Create Pack Dialog" /> | <img src="lib/images/assets/Screenshot_2026-11-14-06-57-59-561_com.pkri.sticko-edit.jpg" width="210" alt="Media Source Picker" /> | <img src="lib/images/assets/Screenshot_2026-11-14-07-03-47-744_com.pkri.sticko-edit.jpg" width="210" alt="Export Confirmation" /> |
+
+### Multi-Client Export & WhatsApp Integration
+
+| WhatsApp & Business Chooser | Original & Dual App Chooser | Shared Pack Card |
+| :---: | :---: | :---: |
+| <img src="lib/images/assets/Screenshot_2026-11-14-07-03-06-385_com.android.intentresolver-edit.jpg" width="210" alt="WhatsApp Business Chooser" /> | <img src="lib/images/assets/Screenshot_2026-11-14-07-03-16-985_com.miui.securitycore-edit.jpg" width="210" alt="Dual App Chooser" /> | <img src="lib/images/assets/Screenshot_2026-11-14-07-05-17-358_com.whatsapp-edit.jpg" width="210" alt="Shared Pack Card" /> |
+
+| WhatsApp Import Prompt | Sticker Keyboard Tray | Stickers in Chat |
+| :---: | :---: | :---: |
+| <img src="lib/images/assets/Screenshot_2026-11-14-07-03-36-440_com.whatsapp-edit.jpg" width="210" alt="WhatsApp Import Prompt" /> | <img src="lib/images/assets/Screenshot_2026-11-14-07-05-43-891_com.whatsapp-edit.jpg" width="210" alt="Sticker Keyboard Tray" /> | <img src="lib/images/assets/Screenshot_2026-11-14-07-07-01-747_com.whatsapp-edit.jpg" width="210" alt="Stickers in Chat" /> |
+
+### Account, Releases & Utilities
+
+| Creator Collection | Account Overview | Utilities & Social Links |
+| :---: | :---: | :---: |
+| <img src="lib/images/assets/Screenshot_2026-11-14-09-12-39-093_com.pkri.sticko-edit.jpg" width="210" alt="Creator Collection" /> | <img src="lib/images/assets/Screenshot_2026-11-14-09-12-49-531_com.pkri.sticko-edit.jpg" width="210" alt="Account Overview" /> | <img src="lib/images/assets/Screenshot_2026-11-14-09-13-08-088_com.pkri.sticko-edit.jpg" width="210" alt="Utilities and Links" /> |
+
+| Edit Creator Profile | APK Update History | Cloud & ZIP Backup |
+| :---: | :---: | :---: |
+| <img src="lib/images/assets/Screenshot_2026-11-14-09-13-28-213_com.pkri.sticko-edit.jpg" width="210" alt="Edit Creator Profile" /> | <img src="lib/images/assets/Screenshot_2026-11-14-09-13-57-414_com.pkri.sticko-edit.jpg" width="210" alt="APK Update History" /> | <img src="lib/images/assets/Screenshot_2026-11-14-09-14-19-289_com.pkri.sticko-edit.jpg" width="210" alt="Cloud Backup and ZIP Restore" /> |
 
 ## Tech Stack
 
@@ -85,6 +118,7 @@ sticko/
 ├── assets/config/                                 # Optional creator links template
 ├── lib/
 │   ├── config/                                    # Runtime configuration loaders
+│   ├── images/                                    # App icons, backgrounds & showcase assets
 │   ├── services/                                  # Pack management, WebP processing, OTA updates
 │   └── ui/                                        # Screens and reusable widgets
 ├── test/                                          # Unit and widget tests
