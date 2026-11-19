@@ -8,8 +8,6 @@ import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
-import android.graphics.Bitmap
-import android.media.MediaMetadataRetriever
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.net.Uri
@@ -19,7 +17,6 @@ import android.widget.Toast
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
-import java.io.ByteArrayOutputStream
 import java.io.File
 import java.net.HttpURLConnection
 import java.net.InetAddress
@@ -325,102 +322,6 @@ class MainActivity : FlutterActivity() {
                     pendingPackIdentifier = identifier
                     previouslyWhitelistedPackages = getWhitelistedPackages(identifier)
                     launchAddPackIntent(identifier, name, targetPkg)
-                }
-
-                "extractVideoFrames" -> {
-                    val videoPath = call.argument<String>("videoPath")
-                    val maxDurationMs = call.argument<Int>("maxDurationMs") ?: 10000
-
-                    if (videoPath == null) {
-                        result.error("INVALID_ARGUMENT", "videoPath cannot be null", null)
-                        return@setMethodCallHandler
-                    }
-
-                    val videoFile = File(videoPath)
-                    if (!videoFile.exists()) {
-                        result.error("FILE_NOT_FOUND", "Video file not found at $videoPath", null)
-                        return@setMethodCallHandler
-                    }
-
-                    // Extract frames in background thread to avoid freezing UI
-                    Thread {
-                        val retriever = MediaMetadataRetriever()
-                        try {
-                            retriever.setDataSource(videoFile.absolutePath)
-                            val durationStr = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)
-                            val videoDurationMs = durationStr?.toLongOrNull() ?: 0L
-                            val effectiveDurationMs = minOf(videoDurationMs, maxDurationMs.toLong()).toInt()
-
-                            if (effectiveDurationMs <= 0) {
-                                runOnUiThread {
-                                    result.error("INVALID_VIDEO", "Video duration could not be determined", null)
-                                }
-                                return@Thread
-                            }
-
-                            // Calculate optimal target frame count for WhatsApp stickers (<= 500 KB limit)
-                            val targetFrames = when {
-                                effectiveDurationMs <= 2000 -> 16
-                                effectiveDurationMs <= 4000 -> 20
-                                effectiveDurationMs <= 7000 -> 24
-                                else -> 28 // 7 to 10 seconds
-                            }
-
-                            val intervalUs = (effectiveDurationMs * 1000L) / targetFrames
-                            val frameDurationMs = (effectiveDurationMs / targetFrames).coerceAtLeast(40)
-
-                            val frameByteArrays = ArrayList<ByteArray>()
-
-                            for (i in 0 until targetFrames) {
-                                val timeUs = i * intervalUs
-                                val rawBitmap = retriever.getFrameAtTime(
-                                    timeUs,
-                                    MediaMetadataRetriever.OPTION_CLOSEST_SYNC
-                                ) ?: retriever.getFrameAtTime(timeUs, MediaMetadataRetriever.OPTION_CLOSEST)
-
-                                if (rawBitmap != null) {
-                                    val w = rawBitmap.width
-                                    val h = rawBitmap.height
-                                    val maxDim = 480
-                                    val scale = minOf(maxDim.toFloat() / w, maxDim.toFloat() / h, 1.0f)
-                                    val targetW = (w * scale).toInt().coerceAtLeast(1)
-                                    val targetH = (h * scale).toInt().coerceAtLeast(1)
-
-                                    val scaledBitmap = Bitmap.createScaledBitmap(rawBitmap, targetW, targetH, true)
-                                    val baos = ByteArrayOutputStream()
-                                    scaledBitmap.compress(Bitmap.CompressFormat.PNG, 85, baos)
-                                    frameByteArrays.add(baos.toByteArray())
-
-                                    if (scaledBitmap != rawBitmap) {
-                                        scaledBitmap.recycle()
-                                    }
-                                    rawBitmap.recycle()
-                                }
-                            }
-
-                            runOnUiThread {
-                                result.success(
-                                    mapOf(
-                                        "frames" to frameByteArrays,
-                                        "frameDurationMs" to frameDurationMs,
-                                        "totalDurationMs" to effectiveDurationMs,
-                                        "frameCount" to frameByteArrays.size
-                                    )
-                                )
-                            }
-                        } catch (e: Exception) {
-                            Log.e(TAG, "Failed to extract video frames", e)
-                            runOnUiThread {
-                                result.error("EXTRACTION_ERROR", e.localizedMessage, null)
-                            }
-                        } finally {
-                            try {
-                                retriever.release()
-                            } catch (e: Exception) {
-                                Log.w(TAG, "Error releasing retriever", e)
-                            }
-                        }
-                    }.start()
                 }
 
                 else -> result.notImplemented()

@@ -346,7 +346,7 @@ class _CreatePackDialogState extends State<CreatePackDialog> {
                                       ),
                                       const SizedBox(height: 4),
                                       Text(
-                                        'Batas Luas (< 500 KB)',
+                                        'Format .gif (< 500 KB)',
                                         style: GoogleFonts.plusJakartaSans(
                                           fontSize: 11,
                                           color: isDark ? Colors.grey[400] : Colors.grey[600],

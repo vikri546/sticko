@@ -1,16 +1,12 @@
 {
-  "latest_version": "1.0.6+7",
+  "latest_version": "1.0.7+8",
   "min_required_version": "1.0.0",
-  "release_tag": "sticko-4",
+  "release_tag": "sticko-5",
   "title": "Pembaruan Sticko Tersedia",
   "message": "Versi terbaru Sticko telah tersedia. Ketuk untuk memperbarui aplikasi.",
   "changelog": [
-    "Fitur: Pilihan aplikasi WhatsApp (Original, Business, & Duplikat) saat menambahkan stiker",
-    "Fitur: Drag & drop penyusunan urutan stiker koleksi",
-    "Fitur: One-touch edit gambar & detail informasi stiker",
-    "Fitur: Konfirmasi tekan kembali 2x untuk keluar & tombol Support Me",
-    "Perbaikan: Optimalisasi unduhan pembaruan APK otomatis & izin ContentProvider multi-WhatsApp"
+    "Update: Perbaikan format GIF animasi"
   ],
-  "apk_url": "https://github.com/vikri546/sticko/releases/download/sticko-4/sticko-app-1.0.6.apk",
+  "apk_url": "https://github.com/vikri546/sticko/releases/download/sticko-5/sticko-app-1.0.7.apk",
   "is_force_update": false
 }

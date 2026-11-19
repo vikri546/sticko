@@ -1,6 +1,7 @@
 import 'dart:io';
 import 'dart:typed_data';
 import 'dart:ui' as ui;
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:google_fonts/google_fonts.dart';
@@ -173,7 +174,7 @@ class _AddStickerSheetState extends State<AddStickerSheet> {
     }
 
     if (_isPackAnimated) {
-      await _pickAnimatedMedia();
+      await _pickGifMedia();
       return;
     }
 
@@ -226,11 +227,62 @@ class _AddStickerSheetState extends State<AddStickerSheet> {
     }
   }
 
-  /// Pick animated media from gallery where both Videos AND GIFs appear in the system gallery.
-  Future<void> _pickAnimatedMedia() async {
-    final hasPermission = await _permissionService.requestGalleryPermission(context);
-    if (!hasPermission || !mounted) return;
+  /// Read, strictly validate, and convert picked `.gif` files to animated WebP stickers.
+  Future<({
+    List<Uint8List> webpList,
+    int nonGifCount,
+    int disguisedWebpCount,
+    int singleFrameCount,
+  })> _processPickedGifFiles(List<PlatformFile> files) async {
+    final webpList = <Uint8List>[];
+    int nonGifCount = 0;
+    int disguisedWebpCount = 0;
+    int singleFrameCount = 0;
 
+    for (final file in files) {
+      final bytes = await file.readAsBytes();
+      if (!StickerImageProcessor.isAnimatedGif(bytes)) {
+        if (StickerImageProcessor.isWebpFormat(bytes)) {
+          disguisedWebpCount++;
+        }
+        nonGifCount++;
+        continue;
+      }
+      try {
+        final processed = await StickerImageProcessor.processGifToStickerWebp(
+          gifBytes: bytes,
+          maxDurationMs: 10000,
+        );
+        webpList.add(processed.webpBytes);
+      } on SingleFrameGifException {
+        singleFrameCount++;
+      }
+    }
+
+    return (
+      webpList: webpList,
+      nonGifCount: nonGifCount,
+      disguisedWebpCount: disguisedWebpCount,
+      singleFrameCount: singleFrameCount,
+    );
+  }
+
+  String _buildInvalidGifMessage({
+    required int nonGifCount,
+    required int disguisedWebpCount,
+    required int singleFrameCount,
+  }) {
+    if (singleFrameCount > 0 && nonGifCount == 0) {
+      return 'Berkas .gif ini hanya memiliki 1 frame (gambar statis). Pilih animasi .gif bergerak.';
+    }
+    if (disguisedWebpCount > 0 && disguisedWebpCount == nonGifCount) {
+      return 'Berkas yang dipilih berformat WebP, bukan .gif asli. Pastikan mengunduh versi .gif asli.';
+    }
+    return 'Hanya mendukung format .gif animasi. Silakan pilih berkas .gif yang valid.';
+  }
+
+  /// Pick `.gif` files cleanly using FilePicker without re-encoding animation frames.
+  Future<void> _pickGifMedia() async {
     final availableSlots = _remainingSlots;
     if (availableSlots <= 0) {
       AppNotification.show(
@@ -242,117 +294,62 @@ class _AddStickerSheetState extends State<AddStickerSheet> {
     }
 
     try {
-      // Buka galeri yang menampilkan KEDUA media: Video dan GIF (menggunakan pickMultipleAnimatedMedia)
-      final files = await StickerImageProcessor.pickMultipleAnimatedMedia(limit: availableSlots);
+      final files = await StickerImageProcessor.pickMultipleGifFiles(
+        limit: availableSlots,
+      );
       if (files.isEmpty || !mounted) return;
 
-      if (files.length == 1) {
-        final file = files.first;
-        final isVideo = StickerImageProcessor.isVideoFile(file.path);
+      setState(() {
+        _isProcessing = true;
+        _processingMessage = files.length == 1
+            ? 'Memproses animasi .gif (maks 10 detik)...'
+            : 'Memproses ${files.length} berkas animasi .gif...';
+      });
 
-        if (isVideo) {
-          setState(() {
-            _isProcessing = true;
-            _processingMessage = 'Mengekstrak frame video animasi (maks 10 detik)...';
-          });
+      final result = await _processPickedGifFiles(files);
+      if (!mounted) return;
 
-          final processed = await StickerImageProcessor.processVideoToStickerWebp(
-            videoPath: file.path,
-            maxDurationMs: 10000,
-          );
+      if (result.webpList.isEmpty) {
+        AppNotification.show(
+          context,
+          message: _buildInvalidGifMessage(
+            nonGifCount: result.nonGifCount,
+            disguisedWebpCount: result.disguisedWebpCount,
+            singleFrameCount: result.singleFrameCount,
+          ),
+          isSuccess: false,
+        );
+        return;
+      }
 
-          if (!mounted) return;
-          setState(() {
-            _selectedImageBytes = processed.webpBytes;
-            _isAnimatedSticker = true;
-            _multiSelectedBytes.clear();
-          });
-        } else {
-          // Berkas GIF atau gambar animasi
-          final bytes = await file.readAsBytes();
-          final isAnim = StickerImageProcessor.isAnimatedMedia(bytes);
-
-          if (!isAnim) {
-            if (!mounted) return;
-            AppNotification.show(
-              context,
-              message: 'Berkas yang dipilih bukan animasi. Silakan pilih GIF animasi atau video.',
-              isSuccess: false,
-            );
-            return;
-          }
-
-          if (!mounted) return;
-          setState(() {
-            _isProcessing = true;
-            _processingMessage = 'Memproses animasi GIF (maks 10 detik)...';
-          });
-
-          final processed = await StickerImageProcessor.processAnimatedToStickerWebp(
-            bytes: bytes,
-            maxDurationMs: 10000,
-          );
-
-          if (!mounted) return;
-          setState(() {
-            _resetEditState();
-            _selectedImageBytes = processed.webpBytes;
-            _isAnimatedSticker = true;
-            _multiSelectedBytes.clear();
-          });
-        }
-      } else {
-        // Multi-image selection for animated stickers
-        setState(() {
-          _isProcessing = true;
-          _processingMessage = 'Memproses ${files.length} berkas animasi...';
-        });
-
-        final newBytesList = <Uint8List>[];
-        for (final file in files) {
-          final isVideo = StickerImageProcessor.isVideoFile(file.path);
-          if (isVideo) {
-            final processed = await StickerImageProcessor.processVideoToStickerWebp(
-              videoPath: file.path,
-              maxDurationMs: 10000,
-            );
-            newBytesList.add(processed.webpBytes);
-          } else {
-            final bytes = await file.readAsBytes();
-            final isAnim = StickerImageProcessor.isAnimatedMedia(bytes);
-            if (isAnim) {
-              final processed = await StickerImageProcessor.processAnimatedToStickerWebp(
-                bytes: bytes,
-                maxDurationMs: 10000,
-              );
-              newBytesList.add(processed.webpBytes);
-            }
-          }
-        }
-
-        if (newBytesList.isEmpty) {
-          if (!mounted) return;
-          AppNotification.show(
-            context,
-            message: 'Tidak ada animasi valid (GIF atau video) yang dipilih.',
-            isSuccess: false,
-          );
-          return;
-        }
-
-        if (!mounted) return;
-        setState(() {
+      final skipped = result.nonGifCount + result.singleFrameCount;
+      setState(() {
+        if (result.webpList.length == 1 && files.length == 1) {
+          _resetEditState();
+          _selectedImageBytes = result.webpList.first;
+          _isAnimatedSticker = true;
           _multiSelectedBytes.clear();
-          _multiSelectedBytes.addAll(newBytesList);
+        } else {
+          _multiSelectedBytes
+            ..clear()
+            ..addAll(result.webpList);
           _selectedImageBytes = null;
           _isAnimatedSticker = true;
-        });
+        }
+      });
+
+      if (skipped > 0) {
+        AppNotification.show(
+          context,
+          message: '$skipped berkas dilewati karena bukan animasi .gif yang valid.',
+          isSuccess: false,
+        );
       }
     } catch (e) {
       if (mounted) {
         AppNotification.show(
           context,
-          message: 'Gagal memproses media animasi: $e',
+          message: 'Gagal memproses animasi .gif: $e',
           isSuccess: false,
         );
       }
@@ -367,9 +364,6 @@ class _AddStickerSheetState extends State<AddStickerSheet> {
   }
 
   Future<void> _pickMoreFromGallery() async {
-    final hasPermission = await _permissionService.requestGalleryPermission(context);
-    if (!hasPermission || !mounted) return;
-
     final availableSlots = _remainingSlots - _multiSelectedBytes.length;
     if (availableSlots <= 0) {
       AppNotification.show(
@@ -380,39 +374,80 @@ class _AddStickerSheetState extends State<AddStickerSheet> {
       return;
     }
 
+    if (_isPackAnimated) {
+      try {
+        final files = await StickerImageProcessor.pickMultipleGifFiles(
+          limit: availableSlots,
+        );
+        if (files.isEmpty || !mounted) return;
+
+        setState(() {
+          _isProcessing = true;
+          _processingMessage = 'Memproses berkas .gif tambahan...';
+        });
+
+        final result = await _processPickedGifFiles(files);
+        if (!mounted) return;
+
+        if (result.webpList.isEmpty) {
+          AppNotification.show(
+            context,
+            message: _buildInvalidGifMessage(
+              nonGifCount: result.nonGifCount,
+              disguisedWebpCount: result.disguisedWebpCount,
+              singleFrameCount: result.singleFrameCount,
+            ),
+            isSuccess: false,
+          );
+          return;
+        }
+
+        setState(() {
+          _multiSelectedBytes.addAll(result.webpList);
+        });
+
+        final skipped = result.nonGifCount + result.singleFrameCount;
+        if (skipped > 0) {
+          AppNotification.show(
+            context,
+            message: '$skipped berkas dilewati karena bukan animasi .gif yang valid.',
+            isSuccess: false,
+          );
+        }
+      } catch (e) {
+        if (mounted) {
+          AppNotification.show(
+            context,
+            message: 'Gagal menambah berkas .gif: $e',
+            isSuccess: false,
+          );
+        }
+      } finally {
+        if (mounted) {
+          setState(() {
+            _isProcessing = false;
+            _processingMessage = null;
+          });
+        }
+      }
+      return;
+    }
+
+    final hasPermission = await _permissionService.requestGalleryPermission(context);
+    if (!hasPermission || !mounted) return;
+
     try {
-      final files = _isPackAnimated
-          ? await StickerImageProcessor.pickMultipleAnimatedMedia(limit: availableSlots)
-          : await StickerImageProcessor.pickMultiImage(limit: availableSlots);
+      final files = await StickerImageProcessor.pickMultiImage(limit: availableSlots);
       if (files.isEmpty || !mounted) return;
 
       setState(() {
         _isProcessing = true;
-        _processingMessage = 'Memproses berkas media tambahan...';
+        _processingMessage = 'Memproses foto tambahan...';
       });
 
       final newBytesList = <Uint8List>[];
       for (final file in files) {
-        final isVideo = StickerImageProcessor.isVideoFile(file.path);
-        if (isVideo) {
-          final processed = await StickerImageProcessor.processVideoToStickerWebp(
-            videoPath: file.path,
-            maxDurationMs: 10000,
-          );
-          newBytesList.add(processed.webpBytes);
-        } else {
-          final bytes = await file.readAsBytes();
-          final isAnim = StickerImageProcessor.isAnimatedMedia(bytes);
-          if (isAnim) {
-            final processed = await StickerImageProcessor.processAnimatedToStickerWebp(
-              bytes: bytes,
-              maxDurationMs: 10000,
-            );
-            newBytesList.add(processed.webpBytes);
-          } else {
-            newBytesList.add(bytes);
-          }
-        }
+        newBytesList.add(await file.readAsBytes());
       }
       if (!mounted) return;
 
@@ -423,7 +458,7 @@ class _AddStickerSheetState extends State<AddStickerSheet> {
       if (mounted) {
         AppNotification.show(
           context,
-          message: 'Gagal menambah media dari galeri: $e',
+          message: 'Gagal menambah foto dari galeri: $e',
           isSuccess: false,
         );
       }
@@ -810,12 +845,12 @@ class _AddStickerSheetState extends State<AddStickerSheet> {
             // Sheet Title
             Text(
               _multiSelectedBytes.isNotEmpty
-                  ? 'Grup Stiker (${_multiSelectedBytes.length} ${_isPackAnimated ? "Animasi" : "Foto"})'
+                  ? 'Grup Stiker (${_multiSelectedBytes.length} ${_isPackAnimated ? "Animasi GIF" : "Foto"})'
                   : (_isEditingExisting
                       ? (_isAnimatedSticker ? 'Edit Stiker Animasi' : 'Edit Stiker')
                       : (_selectedImageBytes != null
                           ? (_isAnimatedSticker ? 'Pratinjau Stiker Animasi' : 'Pratinjau Stiker')
-                          : (_isPackAnimated ? 'Tambah Stiker Animasi (Maks 10s)' : 'Tambah Stiker Baru'))),
+                          : (_isPackAnimated ? 'Tambah Stiker GIF (Maks 10s)' : 'Tambah Stiker Baru'))),
               style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
               textAlign: TextAlign.center,
             ),
@@ -823,16 +858,16 @@ class _AddStickerSheetState extends State<AddStickerSheet> {
             Text(
               _multiSelectedBytes.isNotEmpty
                   ? (_isPackAnimated
-                      ? 'Animasi ini akan diproses otomatis ke format WebP sesuai standar WhatsApp (< 500 KB).'
+                      ? 'Animasi GIF ini akan diproses otomatis ke format WebP sesuai standar WhatsApp (< 500 KB).'
                       : 'Foto-foto ini akan diproses otomatis ke format WebP sesuai standar WhatsApp (< 100 KB).')
                   : (_isEditingExisting
                       ? 'Sesuaikan gambar, teks, atau emoji stiker ini lalu simpan perubahan.'
                       : (_selectedImageBytes != null
                           ? (_isAnimatedSticker
-                              ? 'Stiker animasi WebP bergerak otomatis (maks 10 detik, < 500 KB). Pilih emoji lalu simpan.'
+                              ? 'Stiker animasi dari berkas .gif (maks 10 detik, < 500 KB). Pilih emoji lalu simpan.'
                               : 'Sesuaikan emoji untuk stiker ini sebelum disimpan ke koleksi.')
                           : (_isPackAnimated
-                              ? 'Pilih berkas GIF animasi atau video (maks 10 detik) untuk dijadikan stiker bergerak WhatsApp.'
+                              ? 'Pilih berkas animasi .gif saja (maks 10 detik) untuk dijadikan stiker bergerak WhatsApp.'
                               : 'Pilih foto dari galeri atau ambil foto baru dengan kamera untuk dijadikan stiker WhatsApp.'))),
               style: const TextStyle(color: Colors.grey, fontSize: 13),
               textAlign: TextAlign.center,
@@ -862,7 +897,7 @@ class _AddStickerSheetState extends State<AddStickerSheet> {
                     const SizedBox(height: 8),
                     Text(
                       _isPackAnimated
-                          ? 'Sedang mengoptimalkan stiker agar memenuhi standar WhatsApp (durasi maks 10s, WebP 512x512, ukuran < 500 KB).'
+                          ? 'Sedang mengoptimalkan animasi .gif agar memenuhi standar WhatsApp (durasi maks 10s, WebP 512x512, ukuran < 500 KB).'
                           : 'Sedang mengoptimalkan stiker agar memenuhi standar WhatsApp (WebP 512x512, ukuran < 100 KB).',
                       style: const TextStyle(color: Colors.grey, fontSize: 12),
                       textAlign: TextAlign.center,
@@ -874,14 +909,14 @@ class _AddStickerSheetState extends State<AddStickerSheet> {
             // 1. Initial State: Picker Options
             else if (_selectedImageBytes == null && _multiSelectedBytes.isEmpty) ...[
               if (_isPackAnimated) ...[
-                // Panel Stiker Animasi: HANYA 1 BUTTON
+                // Panel Stiker Animasi: HANYA 1 BUTTON khusus .gif
                 _PickerOptionCard(
-                  icon: Icons.motion_photos_on_rounded,
-                  label: 'Galeri Animasi (GIF / Video)',
-                  subtitle: 'Pilih animasi GIF atau video (maks 10 detik)',
+                  icon: Icons.gif_box_rounded,
+                  label: 'Galeri Animasi (.gif)',
+                  subtitle: 'Hanya mendukung format .gif (maks 10 detik)',
                   color: const Color(0xFF00A884),
                   isHorizontal: true,
-                  onTap: _pickAnimatedMedia,
+                  onTap: _pickGifMedia,
                 ),
               ] else ...[
                 // Panel Stiker Statis Biasa: HANYA 2 BUTTON (Galeri Foto dan Kamera)
@@ -1564,8 +1599,8 @@ class _AddStickerSheetState extends State<AddStickerSheet> {
                             child: Image.memory(
                               bytes,
                               fit: BoxFit.contain,
-                              cacheWidth: 150,
-                              cacheHeight: 150,
+                              cacheWidth: _isPackAnimated ? null : 150,
+                              cacheHeight: _isPackAnimated ? null : 150,
                             ),
                           ),
                         ),
@@ -1642,7 +1677,7 @@ class _AddStickerSheetState extends State<AddStickerSheet> {
                 ),
                 const SizedBox(height: 8),
                 Text(
-                  'Mengompres & memproses stiker $_processingCurrent dari $_processingTotal (< 100 KB)...',
+                  'Mengompres & memproses stiker $_processingCurrent dari $_processingTotal (< ${_isPackAnimated ? 500 : 100} KB)...',
                   style: const TextStyle(fontSize: 12, color: Colors.grey),
                   textAlign: TextAlign.center,
                 ),

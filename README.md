@@ -35,7 +35,7 @@ Download the latest APK directly from [GitHub Releases](https://github.com/vikri
 
 ## Features
 
-- **Static & Animated Stickers:** Converts images, GIFs, and videos (up to 10s) into compliant 512x512 WebP assets following the [WhatsApp Stickers Protocol](https://github.com/WhatsApp/stickers).
+- **Static & Animated Stickers:** Converts images and animated `.gif` files (up to 10s) into compliant 512x512 WebP assets following the [WhatsApp Stickers Protocol](https://github.com/WhatsApp/stickers).
 - **Sticker Studio & Ordering:** Canvas controls for framing, rotation, mirroring, zoom, meme text, and drag-and-drop pack sorting.
 - **Multi-Client WhatsApp Export:** Native Android chooser via [`StickerContentProvider`](android/app/src/main/kotlin/com/pkri/sticko/StickerContentProvider.kt) supporting WhatsApp, WhatsApp Business, Dual Apps, and cloned clients.
 - **Backup & Maintenance:** Cross-pack duplicate detection, local ZIP archive backup/restore, and cache cleanup.

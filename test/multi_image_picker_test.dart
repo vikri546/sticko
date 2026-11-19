@@ -134,10 +134,10 @@ void main() {
       expect(find.text('Tambah Stiker Baru'), findsOneWidget);
       expect(find.text('Galeri Foto'), findsOneWidget);
       expect(find.text('Kamera'), findsOneWidget);
-      expect(find.text('Galeri Animasi (GIF / Video)'), findsNothing);
+      expect(find.text('Galeri Animasi (.gif)'), findsNothing);
     });
 
-    testWidgets('AddStickerSheet displays exactly 1 button for animated sticker packs', (WidgetTester tester) async {
+    testWidgets('AddStickerSheet displays exactly 1 .gif button for animated sticker packs', (WidgetTester tester) async {
       final manager = StickerPackManager();
       manager.resetForTesting();
       await manager.initialize(customStickersDir: tempDir.path, force: true);
@@ -154,9 +154,10 @@ void main() {
       ));
       await tester.pump();
 
-      // Verify sheet title and options: exactly 1 button for animated pack
-      expect(find.text('Tambah Stiker Animasi (Maks 10s)'), findsOneWidget);
-      expect(find.text('Galeri Animasi (GIF / Video)'), findsOneWidget);
+      // Verify sheet title and options: exactly 1 .gif-only button for animated pack
+      expect(find.text('Tambah Stiker GIF (Maks 10s)'), findsOneWidget);
+      expect(find.text('Galeri Animasi (.gif)'), findsOneWidget);
+      expect(find.text('Hanya mendukung format .gif (maks 10 detik)'), findsOneWidget);
       expect(find.text('Galeri Foto'), findsNothing);
       expect(find.text('Kamera'), findsNothing);
     });
