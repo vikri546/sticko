@@ -5,7 +5,12 @@
   "title": "Pembaruan Sticko Tersedia",
   "message": "Versi terbaru Sticko telah tersedia. Ketuk untuk memperbarui aplikasi.",
   "changelog": [
-    "Update: Perbaikan format GIF animasi"
+    "Fitur: Paket stiker bawaan developer Stiker-Kucing-1 (30 stiker siap pakai oleh pkri) langsung di halaman Explore",
+    "Fitur: Upload & konversi stiker animasi khusus format .gif (mendukung berbagai variasi GIF web seperti Giphy)",
+    "Fitur: Mode pratinjau (preview) stiker pada modal paket di halaman Koleksi Kreator",
+    "Perbaikan: Animasi stiker .gif kini berjalan mulus tanpa patah-patah atau penurunan FPS seperti file aslinya",
+    "Perbaikan: Kegagalan unggah berkas .gif pada menu tambah stiker animasi",
+    "Perbaikan: Pemisahan tampilan preview di modal paket dengan editor stiker di halaman kelola paket"
   ],
   "apk_url": "https://github.com/vikri546/sticko/releases/download/sticko-5/sticko-app-1.0.7.apk",
   "is_force_update": false

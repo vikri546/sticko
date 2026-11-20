@@ -187,6 +187,9 @@ class DuplicateStickersService extends ChangeNotifier {
     StickerPackManager? packManager,
   }) async {
     final manager = packManager ?? StickerPackManager();
+    if (manager.isDeveloperPack(occurrence.packIdentifier)) {
+      return false;
+    }
     try {
       await manager.removeStickerFromPack(
         packIdentifier: occurrence.packIdentifier,
@@ -240,7 +243,9 @@ class DuplicateStickersService extends ChangeNotifier {
       final redundantItems = group.occurrences.skip(1).toList();
       for (final item in redundantItems) {
         final pack = manager.getPack(item.packIdentifier);
-        if (pack == null) continue;
+        if (pack == null || manager.isDeveloperPack(item.packIdentifier)) {
+          continue;
+        }
 
         if (preserveThreeStickersRule && pack.stickers.length <= 3) {
           // Do not violate WhatsApp minimum 3 stickers limit

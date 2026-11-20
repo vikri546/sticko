@@ -320,9 +320,9 @@ void main() {
       expect(AppUpdateService.isDirectApkUrl(data['apk_url'].toString()), isTrue);
       final changelog = AppUpdateService.parseChangelog(data);
       expect(changelog, isNotEmpty);
-      expect(changelog.any((e) => e.toLowerCase().contains('drag & drop')), isTrue);
-      expect(changelog.any((e) => e.toLowerCase().contains('one-touch')), isTrue);
-      expect(changelog.any((e) => e.toLowerCase().contains('support me')), isTrue);
+      expect(changelog.any((e) => e.toLowerCase().contains('stiker-kucing-1')), isTrue);
+      expect(changelog.any((e) => e.toLowerCase().contains('.gif')), isTrue);
+      expect(changelog.any((e) => e.toLowerCase().contains('preview')), isTrue);
       expect(changelog.any((e) => e.toLowerCase().contains('perbaikan')), isTrue);
     });
 
@@ -358,11 +358,11 @@ void main() {
       expect(find.text('Informasi Pembaruan'), findsOneWidget);
       expect(find.text('- '), findsWidgets);
       expect(
-        find.text('Fitur: Drag & drop penyusunan urutan stiker koleksi'),
+        find.text(AppUpdateService.defaultChangelog.first),
         findsOneWidget,
       );
       expect(
-        find.text('Perbaikan: Optimalisasi unduhan pembaruan APK otomatis'),
+        find.text(AppUpdateService.defaultChangelog.last),
         findsOneWidget,
       );
       expect(find.text('Perbarui Sekarang'), findsOneWidget);

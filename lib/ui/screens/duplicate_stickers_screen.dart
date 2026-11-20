@@ -83,6 +83,15 @@ class _DuplicateStickersScreenState extends State<DuplicateStickersScreen> {
   }
 
   Future<void> _handleDelete(DuplicateStickerOccurrence occurrence) async {
+    if (_packManager.isDeveloperPack(occurrence.packIdentifier)) {
+      AppNotification.show(
+        context,
+        message: 'Stiker pada paket bawaan developer tidak dapat dihapus.',
+        isSuccess: false,
+      );
+      return;
+    }
+
     final pack = _packManager.getPack(occurrence.packIdentifier);
     final isAtRiskOfMinLimit = pack != null && pack.stickers.length <= 3;
 
@@ -995,13 +1004,14 @@ class _DuplicateStickersScreenState extends State<DuplicateStickersScreen> {
                 color: const Color(0xFF25D366),
                 onPressed: () => _handleReplace(item),
               ),
-              IconButton(
-                tooltip: 'Hapus duplikat dari paket ini',
-                visualDensity: VisualDensity.compact,
-                icon: const Icon(Icons.delete_outline_rounded, size: 20),
-                color: Colors.redAccent,
-                onPressed: () => _handleDelete(item),
-              ),
+              if (!_packManager.isDeveloperPack(item.packIdentifier))
+                IconButton(
+                  tooltip: 'Hapus duplikat dari paket ini',
+                  visualDensity: VisualDensity.compact,
+                  icon: const Icon(Icons.delete_outline_rounded, size: 20),
+                  color: Colors.redAccent,
+                  onPressed: () => _handleDelete(item),
+                ),
             ],
           ),
         ],
@@ -1105,23 +1115,24 @@ class _DuplicateStickersScreenState extends State<DuplicateStickersScreen> {
                           ),
                         ),
                       ),
-                      TextButton.icon(
-                        style: TextButton.styleFrom(
-                          padding: const EdgeInsets.symmetric(
-                              horizontal: 10, vertical: 4),
-                          visualDensity: VisualDensity.compact,
-                          foregroundColor: Colors.redAccent,
-                        ),
-                        onPressed: () => _handleDelete(item),
-                        icon: const Icon(Icons.delete_outline_rounded, size: 16),
-                        label: Text(
-                          'Hapus',
-                          style: GoogleFonts.plusJakartaSans(
-                            fontSize: 12,
-                            fontWeight: FontWeight.bold,
+                      if (!_packManager.isDeveloperPack(item.packIdentifier))
+                        TextButton.icon(
+                          style: TextButton.styleFrom(
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 10, vertical: 4),
+                            visualDensity: VisualDensity.compact,
+                            foregroundColor: Colors.redAccent,
+                          ),
+                          onPressed: () => _handleDelete(item),
+                          icon: const Icon(Icons.delete_outline_rounded, size: 16),
+                          label: Text(
+                            'Hapus',
+                            style: GoogleFonts.plusJakartaSans(
+                              fontSize: 12,
+                              fontWeight: FontWeight.bold,
+                            ),
                           ),
                         ),
-                      ),
                     ],
                   ),
                 ],

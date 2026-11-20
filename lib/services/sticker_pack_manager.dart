@@ -1,5 +1,7 @@
 import 'dart:io';
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
+import 'package:sticker_flutter/config/developer_sticker_packs.dart';
 import 'package:sticker_flutter/services/google_analytics_service.dart';
 import 'package:sticker_flutter/services/sticker_image_processor.dart';
 import 'package:sticker_flutter/services/whatsapp_sticker_validator.dart';
@@ -17,6 +19,7 @@ class StickerPackManager extends ChangeNotifier {
   final Map<String, bool> _installedStatus = {};
 
   bool _isInitialized = false;
+  Future<void>? _initializingFuture;
   static int _packCounter = 0;
   static int _stickerCounter = 0;
 
@@ -31,6 +34,7 @@ class StickerPackManager extends ChangeNotifier {
     _packs = [];
     _installedStatus.clear();
     _isInitialized = false;
+    _initializingFuture = null;
     _isLoading = false;
     _stickersDirectory = null;
     WhatsAppStickersService.resetForTesting();
@@ -52,9 +56,51 @@ class StickerPackManager extends ChangeNotifier {
     return '$_stickersDirectory/$packIdentifier/$trayFileName';
   }
 
-  /// Initialize manager, resolve stickers directory, and load existing packs.
-  Future<void> initialize({String? customStickersDir, bool force = false}) async {
+  /// Check whether a pack is a protected built-in developer pack.
+  bool isDeveloperPack(String packIdentifier) {
+    final pack = getPack(packIdentifier);
+    if (pack != null) {
+      return DeveloperStickerPacks.isProtectedPack(pack);
+    }
+    return DeveloperStickerPacks.isDeveloperPackId(packIdentifier);
+  }
+
+  /// Initialize manager, resolve stickers directory, load existing packs,
+  /// and automatically seed any missing built-in developer sticker packs.
+  Future<void> initialize({
+    String? customStickersDir,
+    bool force = false,
+    bool? seedDeveloperPacks,
+    List<DeveloperStickerPackTemplate>? developerTemplates,
+    AssetBundle? assetBundle,
+  }) async {
     if (_isInitialized && !force) return;
+    if (!force && _initializingFuture != null) {
+      return _initializingFuture;
+    }
+
+    final future = _performInitialize(
+      customStickersDir: customStickersDir,
+      seedDeveloperPacks: seedDeveloperPacks,
+      developerTemplates: developerTemplates,
+      assetBundle: assetBundle,
+    );
+    _initializingFuture = future;
+    try {
+      await future;
+    } finally {
+      if (identical(_initializingFuture, future)) {
+        _initializingFuture = null;
+      }
+    }
+  }
+
+  Future<void> _performInitialize({
+    String? customStickersDir,
+    bool? seedDeveloperPacks,
+    List<DeveloperStickerPackTemplate>? developerTemplates,
+    AssetBundle? assetBundle,
+  }) async {
     _isLoading = true;
     notifyListeners();
 
@@ -64,6 +110,21 @@ class StickerPackManager extends ChangeNotifier {
       _packs = await WhatsAppStickersService.loadContentsJson(
         directoryPath: _stickersDirectory,
       );
+
+      final shouldSeed = seedDeveloperPacks ?? (customStickersDir == null);
+      if (shouldSeed && _stickersDirectory != null) {
+        final seeded = await DeveloperStickerPacks.seedMissingPacks(
+          stickersDirectory: _stickersDirectory!,
+          existingPacks: _packs,
+          templates: developerTemplates,
+          bundle: assetBundle,
+        );
+        _packs = seeded.packs;
+        if (seeded.changed) {
+          await _savePacks();
+        }
+      }
+
       await refreshInstalledStatuses();
       _isInitialized = true;
     } catch (e) {
@@ -300,6 +361,10 @@ class StickerPackManager extends ChangeNotifier {
     if (packIndex == -1) return;
 
     final currentPack = _packs[packIndex];
+    if (DeveloperStickerPacks.isProtectedPack(currentPack)) {
+      throw Exception('Stiker pada paket bawaan developer tidak dapat dihapus.');
+    }
+
     final dirPath = _stickersDirectory ??
         await WhatsAppStickersService.getStickersDirectory();
     final file = File('$dirPath/$packIdentifier/$fileName');
@@ -443,6 +508,10 @@ class StickerPackManager extends ChangeNotifier {
 
   /// Delete an entire pack and all its associated files.
   Future<void> deletePack(String packIdentifier) async {
+    if (isDeveloperPack(packIdentifier)) {
+      throw Exception('Paket bawaan developer tidak dapat dihapus.');
+    }
+
     final dirPath = _stickersDirectory ??
         await WhatsAppStickersService.getStickersDirectory();
     final packDir = Directory('$dirPath/$packIdentifier');

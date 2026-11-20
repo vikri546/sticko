@@ -55,17 +55,20 @@ class StickerGridTile extends StatelessWidget {
       child: Stack(
         children: [
 
-          // Sticker Image
+          // Sticker Image (RepaintBoundary isolates per-tile animated WebP ticks for smooth FPS)
           Positioned.fill(
             child: Padding(
               padding: const EdgeInsets.all(10.0),
               child: fileExists
-                  ? Image.file(
-                      file,
-                      fit: BoxFit.contain,
-                      filterQuality: FilterQuality.medium,
-                      errorBuilder: (_, _, _) => const Center(
-                        child: Icon(Icons.broken_image_rounded, color: Colors.grey),
+                  ? RepaintBoundary(
+                      child: Image.file(
+                        file,
+                        fit: BoxFit.contain,
+                        gaplessPlayback: true,
+                        filterQuality: FilterQuality.medium,
+                        errorBuilder: (_, _, _) => const Center(
+                          child: Icon(Icons.broken_image_rounded, color: Colors.grey),
+                        ),
                       ),
                     )
                   : const Center(

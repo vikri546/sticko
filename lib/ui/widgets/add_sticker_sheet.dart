@@ -993,9 +993,12 @@ class _AddStickerSheetState extends State<AddStickerSheet> {
                                 fit: StackFit.expand,
                                 children: [
                                   if (_isAnimatedSticker)
-                                    Image.memory(
-                                      _selectedImageBytes!,
-                                      fit: BoxFit.contain,
+                                    RepaintBoundary(
+                                      child: Image.memory(
+                                        _selectedImageBytes!,
+                                        fit: BoxFit.contain,
+                                        gaplessPlayback: true,
+                                      ),
                                     )
                                   else
                                     InteractiveViewer(
@@ -1596,11 +1599,14 @@ class _AddStickerSheetState extends State<AddStickerSheet> {
                         Positioned.fill(
                           child: ClipRRect(
                             borderRadius: BorderRadius.circular(10),
-                            child: Image.memory(
-                              bytes,
-                              fit: BoxFit.contain,
-                              cacheWidth: _isPackAnimated ? null : 150,
-                              cacheHeight: _isPackAnimated ? null : 150,
+                            child: RepaintBoundary(
+                              child: Image.memory(
+                                bytes,
+                                fit: BoxFit.contain,
+                                gaplessPlayback: true,
+                                cacheWidth: _isPackAnimated ? null : 150,
+                                cacheHeight: _isPackAnimated ? null : 150,
+                              ),
                             ),
                           ),
                         ),

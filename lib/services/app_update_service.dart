@@ -86,24 +86,40 @@ class AppVersionRelease {
 /// Service that handles app version comparison, remote check, status bar notifications,
 /// and automatic APK download & installation.
 class AppUpdateService {
-  static const String defaultCurrentVersion = '1.0.6+7';
-  static const String defaultReleaseTag = 'sticko-4';
+  static const String defaultCurrentVersion = '1.0.7+8';
+  static const String defaultReleaseTag = 'sticko-5';
   static const List<String> defaultChangelog = [
-    'Fitur: Pilihan aplikasi WhatsApp (Original, Business, & Duplikat) saat menambahkan stiker',
-    'Fitur: Drag & drop penyusunan urutan stiker koleksi',
-    'Fitur: One-touch edit gambar & detail informasi stiker',
-    'Fitur: Konfirmasi tekan kembali 2x untuk keluar aplikasi',
-    'Fitur: Dukungan pengembang melalui tombol Support Me',
-    'Perbaikan: Optimalisasi unduhan pembaruan APK otomatis',
+    'Fitur: Paket stiker bawaan developer Stiker-Kucing-1 (30 stiker siap pakai oleh pkri) langsung di halaman Explore',
+    'Fitur: Upload & konversi stiker animasi khusus format .gif (mendukung berbagai variasi GIF web seperti Giphy)',
+    'Fitur: Mode pratinjau (preview) stiker pada modal paket di halaman Koleksi Kreator',
+    'Perbaikan: Animasi stiker .gif kini berjalan mulus tanpa patah-patah atau penurunan FPS seperti file aslinya',
+    'Perbaikan: Kegagalan unggah berkas .gif pada menu tambah stiker animasi',
+    'Perbaikan: Pemisahan tampilan preview di modal paket dengan editor stiker di halaman kelola paket',
   ];
 
   /// Complete chronological release history across Sticko APK versions.
   static const List<AppVersionRelease> defaultVersionHistory = [
     AppVersionRelease(
+      version: '1.0.7+8',
+      releaseTag: 'sticko-5',
+      releaseDate: '20 Nov 2026',
+      isLatest: true,
+      features: [
+        'Koleksi paket stiker bawaan developer pertama (Stiker-Kucing-1 oleh pkri, 30 stiker) langsung hadir di halaman Explore dengan badge Bawaan, tetap dapat diedit & diurutkan namun terlindungi dari penghapusan',
+        'Input stiker animasi difokuskan khusus format .gif dengan dukungan penuh berbagai jenis berkas GIF web (seperti Giphy) ke WebP animasi 512 × 512 px (< 500 KB)',
+        'Tampilan pratinjau (preview) stiker khusus pada modal bawah tab Paket di halaman Koleksi Kreator',
+      ],
+      bugFixes: [
+        'Perbaikan animasi stiker .gif yang sebelumnya patah-patah / lag / FPS drop agar berjalan lancar mengikuti kecepatan frame aslinya',
+        'Perbaikan kendala gagal unggah berkas .gif saat menambahkan stiker ke paket animasi',
+        'Perbaikan ketuk stiker pada modal tab Paket Koleksi Kreator agar hanya membuka pratinjau tanpa langsung masuk ke halaman Edit Stiker',
+      ],
+    ),
+    AppVersionRelease(
       version: '1.0.6+7',
       releaseTag: 'sticko-4',
       releaseDate: '13 Nov 2026',
-      isLatest: true,
+      isLatest: false,
       features: [
         'Modal konfirmasi bawaan handphone untuk memilih aplikasi WhatsApp (Original, Business, maupun Duplikat/Klon) saat menambahkan stiker',
         'Halaman Riwayat Pembaruan APK dengan gaya visual kaca cair (Liquid Glass) & sistem dropdown akordeon',
@@ -181,7 +197,7 @@ class AppUpdateService {
   static const String defaultUpdateCheckUrl =
       'https://raw.githubusercontent.com/vikri546/sticko/main/version.json';
   static const String defaultDirectApkUrl =
-      'https://github.com/vikri546/sticko/releases/download/sticko-4/sticko-app-1.0.6.apk';
+      'https://github.com/vikri546/sticko/releases/download/sticko-5/sticko-app-1.0.7.apk';
 
   static bool _isDialogShowing = false;
 

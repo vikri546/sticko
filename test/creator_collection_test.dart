@@ -157,6 +157,22 @@ void main() {
       expect(find.text('Buka & Kelola Paket'), findsOneWidget);
       expect(find.text('3 Stiker • Kreator: Sticko Pro'), findsOneWidget);
 
+      // Tapping a sticker inside the pack modal should show preview-only modal (NO edit controls)
+      await tester.tap(find.text('😎'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Paket: Paket Emoji Keren'), findsOneWidget);
+      expect(find.text('Emoji: 😎'), findsOneWidget);
+      expect(find.text('Tutup'), findsOneWidget);
+      expect(find.text('Edit Stiker'), findsNothing);
+      expect(find.text('Edit Stiker Animasi'), findsNothing);
+      expect(find.text('Simpan Perubahan'), findsNothing);
+
+      // Closing preview returns to the pack modal
+      await tester.tap(find.text('Tutup'));
+      await tester.pumpAndSettle();
+      expect(find.text('Buka & Kelola Paket'), findsOneWidget);
+
       await tester.tap(find.byIcon(Icons.close_rounded));
       await tester.pumpAndSettle();
       expect(find.text('Buka & Kelola Paket'), findsNothing);

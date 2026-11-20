@@ -6,7 +6,6 @@ import 'package:google_fonts/google_fonts.dart';
 import 'package:sticker_flutter/services/sticker_pack_manager.dart';
 import 'package:sticker_flutter/services/whatsapp_stickers_service.dart';
 import 'package:sticker_flutter/ui/screens/pack_detail_screen.dart';
-import 'package:sticker_flutter/ui/widgets/add_sticker_sheet.dart';
 import 'package:sticker_flutter/ui/widgets/create_pack_dialog.dart';
 
 /// Screen displaying Creator Content split into 3 tabs:
@@ -243,10 +242,11 @@ class _CreatorCollectionScreenState extends State<CreatorCollectionScreen>
                                     child: InkWell(
                                       borderRadius: BorderRadius.circular(8),
                                       onTap: () {
-                                        _openEditStickerSheet(
+                                        _showStickerPreviewModal(
                                           sticker: sticker,
                                           pack: pack,
                                           filePath: filePath,
+                                          fromPackModal: true,
                                         );
                                       },
                                       child: Stack(
@@ -255,13 +255,16 @@ class _CreatorCollectionScreenState extends State<CreatorCollectionScreen>
                                             child: Padding(
                                               padding: const EdgeInsets.all(4),
                                               child: file != null && file.existsSync()
-                                                  ? Image.file(
-                                                      file,
-                                                      fit: BoxFit.contain,
-                                                      errorBuilder: (_, _, _) => const Icon(
-                                                        Icons.broken_image_rounded,
-                                                        color: Colors.grey,
-                                                        size: 24,
+                                                  ? RepaintBoundary(
+                                                      child: Image.file(
+                                                        file,
+                                                        fit: BoxFit.contain,
+                                                        gaplessPlayback: true,
+                                                        errorBuilder: (_, _, _) => const Icon(
+                                                          Icons.broken_image_rounded,
+                                                          color: Colors.grey,
+                                                          size: 24,
+                                                        ),
                                                       ),
                                                     )
                                                   : const Icon(
@@ -383,27 +386,11 @@ class _CreatorCollectionScreenState extends State<CreatorCollectionScreen>
     );
   }
 
-  void _openEditStickerSheet({
-    required StickerItem sticker,
-    required StickerPack pack,
-    required String? filePath,
-  }) {
-    showModalBottomSheet(
-      context: context,
-      isScrollControlled: true,
-      backgroundColor: Colors.transparent,
-      builder: (_) => AddStickerSheet(
-        packIdentifier: pack.identifier,
-        editingSticker: sticker,
-        editingStickerFilePath: filePath,
-      ),
-    );
-  }
-
   void _showStickerPreviewModal({
     required StickerItem sticker,
     required StickerPack pack,
     required String? filePath,
+    bool fromPackModal = false,
   }) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
     final file = filePath != null ? File(filePath) : null;
@@ -435,13 +422,16 @@ class _CreatorCollectionScreenState extends State<CreatorCollectionScreen>
                 height: 140,
                 child: Center(
                   child: file != null && file.existsSync()
-                      ? Image.file(
-                          file,
-                          fit: BoxFit.contain,
-                          errorBuilder: (_, _, _) => const Icon(
-                            Icons.broken_image_rounded,
-                            color: Colors.grey,
-                            size: 40,
+                      ? RepaintBoundary(
+                          child: Image.file(
+                            file,
+                            fit: BoxFit.contain,
+                            gaplessPlayback: true,
+                            errorBuilder: (_, _, _) => const Icon(
+                              Icons.broken_image_rounded,
+                              color: Colors.grey,
+                              size: 40,
+                            ),
                           ),
                         )
                       : const Icon(
@@ -482,15 +472,17 @@ class _CreatorCollectionScreenState extends State<CreatorCollectionScreen>
                   ),
                   onPressed: () {
                     Navigator.of(ctx).pop();
-                    Navigator.of(context).push(
-                      MaterialPageRoute(
-                        builder: (_) =>
-                            PackDetailScreen(packIdentifier: pack.identifier),
-                      ),
-                    );
+                    if (!fromPackModal) {
+                      Navigator.of(context).push(
+                        MaterialPageRoute(
+                          builder: (_) =>
+                              PackDetailScreen(packIdentifier: pack.identifier),
+                        ),
+                      );
+                    }
                   },
                   child: Text(
-                    'Lihat di Paket',
+                    fromPackModal ? 'Tutup' : 'Lihat di Paket',
                     style: GoogleFonts.plusJakartaSans(fontWeight: FontWeight.bold),
                   ),
                 ),

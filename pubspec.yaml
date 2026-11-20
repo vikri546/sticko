@@ -72,6 +72,7 @@ flutter:
     - lib/images/sticko-app.png
     - lib/images/homescreen.png
     - lib/images/accountscreen.png
+    - lib/images/template-1/
     - assets/config/
 
 flutter_launcher_icons:

@@ -429,6 +429,8 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(find.text('Riwayat Pembaruan'), findsOneWidget);
+      expect(find.text('Versi 1.0.7+8'), findsOneWidget);
+      expect(find.text('Dirilis: 20 Nov 2026'), findsOneWidget);
       expect(find.text('Versi 1.0.6+7'), findsOneWidget);
       expect(find.text('Dirilis: 13 Nov 2026'), findsOneWidget);
       expect(find.text('Versi 1.0.5+6'), findsOneWidget);
@@ -440,24 +442,26 @@ void main() {
       // Verify "Rincian Semua Versi" is removed
       expect(find.text('Rincian Semua Versi'), findsNothing);
 
-      // Latest version (1.0.6+7) is expanded by default, showing features & bug fixes
+      // Latest version (1.0.7+8) is expanded by default, showing features & bug fixes
       expect(
-        find.byKey(const ValueKey('version_details_1.0.6+7')),
+        find.byKey(const ValueKey('version_details_1.0.7+8')),
         findsOneWidget,
       );
+      expect(find.textContaining('Stiker-Kucing-1'), findsOneWidget);
+      expect(find.textContaining('.gif'), findsWidgets);
       expect(
         find.byKey(const ValueKey('version_details_1.0.4+5')),
         findsNothing,
       );
 
-      // Tap dropdown ("Lihat") on 1.0.4+5 while 1.0.6+7 is shown:
-      // 1.0.6+7 should automatically hide, and 1.0.4+5 should show
+      // Tap dropdown ("Lihat") on 1.0.4+5 while 1.0.7+8 is shown:
+      // 1.0.7+8 should automatically hide, and 1.0.4+5 should show
       await tester.tap(
         find.byKey(const ValueKey('version_dropdown_1.0.4+5')),
       );
       await tester.pumpAndSettle();
       expect(
-        find.byKey(const ValueKey('version_details_1.0.6+7')),
+        find.byKey(const ValueKey('version_details_1.0.7+8')),
         findsNothing,
       );
       expect(

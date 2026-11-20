@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:sticker_flutter/config/developer_sticker_packs.dart';
 import 'package:sticker_flutter/services/sticker_pack_manager.dart';
 import 'package:sticker_flutter/services/whatsapp_stickers_service.dart';
 import 'package:sticker_flutter/ui/widgets/add_sticker_sheet.dart';
@@ -189,6 +190,15 @@ class _PackDetailScreenState extends State<PackDetailScreen> {
   }
 
   void _confirmDeletePack(StickerPack pack) {
+    if (DeveloperStickerPacks.isProtectedPack(pack)) {
+      AppNotification.show(
+        context,
+        message: 'Paket bawaan developer tidak dapat dihapus.',
+        isSuccess: false,
+      );
+      return;
+    }
+
     showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
@@ -234,6 +244,7 @@ class _PackDetailScreenState extends State<PackDetailScreen> {
         final isInstalled = _manager.isPackInstalled(pack.identifier);
         final canAdd = pack.canAddToWhatsApp;
         final totalStickers = pack.stickers.length;
+        final isDeveloperPack = DeveloperStickerPacks.isProtectedPack(pack);
 
         return Scaffold(
           appBar: AppBar(
@@ -260,11 +271,12 @@ class _PackDetailScreenState extends State<PackDetailScreen> {
                 tooltip: 'Optimalkan Ukuran Stiker',
                 onPressed: () => _manualOptimizePack(pack),
               ),
-              IconButton(
-                icon: const Icon(Icons.delete_outline_rounded, color: Colors.redAccent),
-                tooltip: 'Hapus Paket',
-                onPressed: () => _confirmDeletePack(pack),
-              ),
+              if (!isDeveloperPack)
+                IconButton(
+                  icon: const Icon(Icons.delete_outline_rounded, color: Colors.redAccent),
+                  tooltip: 'Hapus Paket',
+                  onPressed: () => _confirmDeletePack(pack),
+                ),
             ],
           ),
           body: Column(
@@ -383,6 +395,7 @@ class _PackDetailScreenState extends State<PackDetailScreen> {
                   sticker: sticker,
                   filePath: filePath,
                   isDragTargetHighlighted: isTargetHovered,
+                  showDeleteButton: !DeveloperStickerPacks.isProtectedPack(pack),
                   onTap: () => _openEditStickerSheet(pack, sticker, filePath),
                   onDelete: () => _manager.removeStickerFromPack(
                     packIdentifier: pack.identifier,

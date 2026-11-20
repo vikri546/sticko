@@ -137,6 +137,7 @@ class StickerPack {
   final String imageDataVersion;
   final bool avoidCache;
   final bool animatedStickerPack;
+  final bool isDeveloperPack;
   final List<StickerItem> stickers;
 
   const StickerPack({
@@ -147,6 +148,7 @@ class StickerPack {
     this.imageDataVersion = '1',
     this.avoidCache = false,
     this.animatedStickerPack = false,
+    this.isDeveloperPack = false,
     this.stickers = const [],
   });
 
@@ -163,6 +165,7 @@ class StickerPack {
     String? imageDataVersion,
     bool? avoidCache,
     bool? animatedStickerPack,
+    bool? isDeveloperPack,
     List<StickerItem>? stickers,
   }) {
     return StickerPack(
@@ -173,6 +176,7 @@ class StickerPack {
       imageDataVersion: imageDataVersion ?? this.imageDataVersion,
       avoidCache: avoidCache ?? this.avoidCache,
       animatedStickerPack: animatedStickerPack ?? this.animatedStickerPack,
+      isDeveloperPack: isDeveloperPack ?? this.isDeveloperPack,
       stickers: stickers ?? this.stickers,
     );
   }
@@ -185,6 +189,7 @@ class StickerPack {
         'image_data_version': imageDataVersion,
         'avoid_cache': avoidCache,
         'animated_sticker_pack': animatedStickerPack,
+        'is_developer_pack': isDeveloperPack,
         'stickers': stickers.map((s) => s.toJson()).toList(),
       };
 
@@ -197,6 +202,7 @@ class StickerPack {
       imageDataVersion: json['image_data_version'] as String? ?? '1',
       avoidCache: json['avoid_cache'] as bool? ?? false,
       animatedStickerPack: json['animated_sticker_pack'] as bool? ?? false,
+      isDeveloperPack: json['is_developer_pack'] as bool? ?? false,
       stickers: (json['stickers'] as List<dynamic>?)
               ?.map((s) => StickerItem.fromJson(s as Map<String, dynamic>))
               .toList() ??

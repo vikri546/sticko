@@ -238,26 +238,41 @@ class StickerImageProcessor {
       int frameWidth = 0;
       int frameHeight = 0;
       int accumulatedMs = 0;
-      int sampleStep = 1;
       int pendingSkippedMs = 0;
+
+      // High frame budget (120 frames = 30 FPS for 4s, 20 FPS for 6s, 12 FPS for 10s)
+      // so normal Giphy/web GIFs keep 100% of their original frames and exact timing.
+      const int maxDecodedFrames = 120;
+      double sampleStride = 1.0;
+      double nextKeepIndex = 0.0;
 
       for (int i = 0; i < totalFrames; i++) {
         final frameInfo = await codec.getNextFrame();
         final image = frameInfo.image;
         try {
           final rawMs = frameInfo.duration.inMilliseconds;
-          final dur = rawMs > 10 ? rawMs : 100;
+          // Skia already normalizes 0ms/10ms GIF delays to 100ms per Chrome/browser spec.
+          final dur = rawMs >= 16 ? rawMs : (rawMs > 0 ? 20 : 100);
+
+          if (i == 0 && totalFrames > maxDecodedFrames) {
+            final estimatedFramesInWindow =
+                (maxDurationMs / dur).ceil().clamp(2, totalFrames);
+            if (estimatedFramesInWindow > maxDecodedFrames) {
+              sampleStride = estimatedFramesInWindow / maxDecodedFrames;
+            }
+          }
 
           if (accumulatedMs + dur > maxDurationMs && keptBytes.isNotEmpty) {
             break;
           }
           accumulatedMs += dur;
 
-          final shouldKeep = (i % sampleStep == 0) || keptBytes.isEmpty;
+          final shouldKeep = (i == 0) || (i + 1e-6 >= nextKeepIndex);
           if (!shouldKeep) {
             pendingSkippedMs += dur;
             continue;
           }
+          nextKeepIndex += sampleStride;
 
           final byteData = await image.toByteData(
             format: ui.ImageByteFormat.rawStraightRgba,
@@ -281,23 +296,22 @@ class StickerImageProcessor {
           );
           keptDurations.add(dur);
 
-          // Compact in-place when exceeding 32 kept frames (e.g. high-FPS Giphy GIFs)
-          if (keptBytes.length >= 32 && i + 1 < totalFrames) {
-            final compactedBytes = <Uint8List>[];
-            final compactedDurations = <int>[];
-            for (int k = 0; k < keptBytes.length; k += 2) {
-              compactedBytes.add(keptBytes[k]);
-              final d1 = keptDurations[k];
-              final d2 = (k + 1 < keptDurations.length) ? keptDurations[k + 1] : 0;
-              compactedDurations.add(d1 + d2);
-            }
+          // Safety guard only for extreme variable-delay GIFs exceeding memory ceiling
+          if (keptBytes.length >= 160 && i + 1 < totalFrames) {
+            final resampled = _resampleGenericUniformly(
+              keptBytes,
+              keptDurations,
+              maxDecodedFrames,
+              maxDurationMs,
+            );
             keptBytes
               ..clear()
-              ..addAll(compactedBytes);
+              ..addAll(resampled.items);
             keptDurations
               ..clear()
-              ..addAll(compactedDurations);
-            sampleStep *= 2;
+              ..addAll(resampled.durations);
+            sampleStride = (sampleStride * 1.35).clamp(1.0, 16.0);
+            nextKeepIndex = i + sampleStride;
           }
         } finally {
           image.dispose();
@@ -306,6 +320,21 @@ class StickerImageProcessor {
 
       if (pendingSkippedMs > 0 && keptDurations.isNotEmpty) {
         keptDurations[keptDurations.length - 1] += pendingSkippedMs;
+      }
+
+      if (keptBytes.length > maxDecodedFrames) {
+        final resampled = _resampleGenericUniformly(
+          keptBytes,
+          keptDurations,
+          maxDecodedFrames,
+          maxDurationMs,
+        );
+        keptBytes
+          ..clear()
+          ..addAll(resampled.items);
+        keptDurations
+          ..clear()
+          ..addAll(resampled.durations);
       }
 
       if (keptBytes.length <= 1 || frameWidth <= 0 || frameHeight <= 0) {
@@ -323,7 +352,7 @@ class StickerImageProcessor {
         totalDur += keptDurations[i];
         if (totalDur > maxDurationMs) {
           keptDurations[i] =
-              (keptDurations[i] - (totalDur - maxDurationMs)).clamp(20, maxDurationMs);
+              (keptDurations[i] - (totalDur - maxDurationMs)).clamp(16, maxDurationMs);
           totalDur = maxDurationMs;
         }
       }
@@ -625,34 +654,109 @@ class StickerImageProcessor {
     return singleFrame;
   }
 
-  /// Downsample frames evenly to at most [maxFrames] while merging durations
-  /// to keep total animation playback speed accurate.
-  static ({List<img.Image> frames, List<int> durations}) _downsampleFrames(
+  /// Check if two single-frame RGBA images have identical pixel buffers.
+  static bool _areFramesIdentical(img.Image a, img.Image b) {
+    if (a.width != b.width || a.height != b.height || a.numChannels != b.numChannels) {
+      return false;
+    }
+    final bytesA = a.toUint8List();
+    final bytesB = b.toUint8List();
+    if (bytesA.length != bytesB.length) return false;
+    // Fast-fail probe at start, middle, end before full scan
+    final len = bytesA.length;
+    if (len == 0) return true;
+    if (bytesA[0] != bytesB[0] ||
+        bytesA[len >> 1] != bytesB[len >> 1] ||
+        bytesA[len - 1] != bytesB[len - 1]) {
+      return false;
+    }
+    for (int i = 0; i < len; i++) {
+      if (bytesA[i] != bytesB[i]) return false;
+    }
+    return true;
+  }
+
+  /// Merge identical consecutive frames by folding their durations together.
+  /// Saves WebP bytes without dropping any real motion or altering playback speed.
+  static ({List<img.Image> frames, List<int> durations}) _deduplicateConsecutiveFrames(
     List<img.Image> frames,
     List<int> durations,
-    int maxFrames,
+    int maxDurationMs,
   ) {
-    if (frames.length <= maxFrames || maxFrames < 2) {
+    if (frames.length <= 2) {
       return (frames: frames, durations: durations);
     }
-    final step = (frames.length / maxFrames).ceil();
-    final outFrames = <img.Image>[];
-    final outDurations = <int>[];
-    for (int i = 0; i < frames.length; i += step) {
-      outFrames.add(frames[i]);
-      int combinedDur = 0;
-      for (int j = i; j < i + step && j < durations.length; j++) {
-        combinedDur += durations[j];
+    final outFrames = <img.Image>[frames.first];
+    final outDurations = <int>[durations.first];
+
+    for (int i = 1; i < frames.length; i++) {
+      final candidate = frames[i];
+      final dur = durations[i];
+      final mergedDur = outDurations.last + dur;
+      if (_areFramesIdentical(outFrames.last, candidate) &&
+          mergedDur <= maxDurationMs) {
+        outDurations[outDurations.length - 1] = mergedDur;
+      } else {
+        outFrames.add(candidate);
+        outDurations.add(dur);
       }
-      outDurations.add(combinedDur > 0 ? combinedDur : 100);
+    }
+
+    // Never collapse an animated sequence down to 1 single frame
+    if (outFrames.length < 2) {
+      return (frames: frames, durations: durations);
     }
     return (frames: outFrames, durations: outDurations);
   }
 
+  /// Time-uniform fractional resampling to exactly [targetCount] frames while preserving
+  /// total playback duration and Frame 0 intact (avoids 50% integer `ceil()` FPS cliffs).
+  static ({List<T> items, List<int> durations}) _resampleGenericUniformly<T>(
+    List<T> items,
+    List<int> durations,
+    int targetCount,
+    int maxDurationMs,
+  ) {
+    if (items.length <= targetCount || targetCount < 2) {
+      return (items: List<T>.from(items), durations: List<int>.from(durations));
+    }
+
+    int totalMs = 0;
+    final endTimes = <int>[];
+    for (int i = 0; i < items.length; i++) {
+      final d = i < durations.length && durations[i] > 0 ? durations[i] : 50;
+      totalMs += d;
+      endTimes.add(totalMs);
+    }
+    final cappedTotalMs = totalMs > maxDurationMs ? maxDurationMs : totalMs;
+
+    final outItems = <T>[];
+    final outDurations = <int>[];
+    int srcIdx = 0;
+    int prevEnd = 0;
+
+    for (int k = 0; k < targetCount; k++) {
+      final targetEnd = ((k + 1) * cappedTotalMs / targetCount).round();
+      final sampleTime = (k == 0) ? 0 : ((k * totalMs) / targetCount).floor();
+
+      while (srcIdx + 1 < items.length && endTimes[srcIdx] <= sampleTime) {
+        srcIdx++;
+      }
+
+      outItems.add(items[srcIdx]);
+      final sliceDur = (targetEnd - prevEnd).clamp(16, maxDurationMs);
+      outDurations.add(sliceDur);
+      prevEnd = targetEnd;
+    }
+
+    return (items: outItems, durations: outDurations);
+  }
+
   /// Background isolate processor function for animated `.gif` (and internal `.webp`) stickers.
-  /// Enforces WhatsApp constraints:
+  /// Prioritizes keeping 100% of original GIF frames & timing for smooth playback while
+  /// enforcing WhatsApp constraints:
   /// - Maximum duration: 10 seconds (10,000 ms)
-  /// - Dimensions: 512x512 with 16px transparent margins (480 inner box)
+  /// - Dimensions: 512x512 with transparent padding
   /// - File size: <= 500 KB (500 * 1024 bytes)
   /// - Looping: Infinite loop (loopCount = 0)
   static ProcessedStickerResult _isolateProcessAnimatedSticker(dynamic input) {
@@ -666,6 +770,7 @@ class StickerImageProcessor {
     final maxDurationMs = (map['maxDurationMs'] as int?) ?? 10000;
     final maxBytes = (map['maxBytes'] as int?) ?? maxAnimatedFileSizeBytes;
 
+    const int maxWorkingFrames = 120;
     List<img.Image> frameImages = [];
     List<int> frameDurations = [];
 
@@ -691,9 +796,9 @@ class StickerImageProcessor {
         sourceDurations.add(i < durs.length ? durs[i] : defaultFrameDuration);
       }
 
-      final capped = _downsampleFrames(sourceFrames, sourceDurations, 28);
-      frameImages = capped.frames;
-      frameDurations = capped.durations;
+      // Preserve ALL decoded frames (already capped cleanly at 120 in native decoder)
+      frameImages = sourceFrames;
+      frameDurations = sourceDurations;
     } else if (bytes != null) {
       img.Image? decodedAnim;
       if (isAnimatedGif(bytes)) {
@@ -726,7 +831,7 @@ class StickerImageProcessor {
         int totalDur = 0;
         for (int i = 0; i < decodedAnim.numFrames; i++) {
           final d = decodedAnim.frames[i].frameDuration;
-          totalDur += d > 10 ? d : 100;
+          totalDur += d >= 8 ? d : 100;
         }
         if (totalDur <= maxDurationMs) {
           return ProcessedStickerResult(
@@ -738,14 +843,14 @@ class StickerImageProcessor {
         }
       }
 
-      // Collect frames up to maxDurationMs (10,000 ms) and convert each to standalone RGBA.
+      // Collect all frames up to maxDurationMs (10,000 ms) preserving original timing.
       int accumulatedDuration = 0;
       final sourceFrames = <img.Image>[];
       final sourceDurations = <int>[];
 
       for (int i = 0; i < decodedAnim.numFrames; i++) {
         final f = decodedAnim.frames[i];
-        final dur = f.frameDuration > 10 ? f.frameDuration : 100;
+        final dur = f.frameDuration >= 20 ? f.frameDuration : 100;
         if (accumulatedDuration + dur > maxDurationMs && sourceFrames.isNotEmpty) {
           break; // Hard cap at 10 seconds
         }
@@ -759,9 +864,19 @@ class StickerImageProcessor {
         sourceDurations.add(100);
       }
 
-      final capped = _downsampleFrames(sourceFrames, sourceDurations, 28);
-      frameImages = capped.frames;
-      frameDurations = capped.durations;
+      if (sourceFrames.length > maxWorkingFrames) {
+        final resampled = _resampleGenericUniformly(
+          sourceFrames,
+          sourceDurations,
+          maxWorkingFrames,
+          maxDurationMs,
+        );
+        frameImages = resampled.items;
+        frameDurations = resampled.durations;
+      } else {
+        frameImages = sourceFrames;
+        frameDurations = sourceDurations;
+      }
     } else if (rawFrames != null && rawFrames.isNotEmpty) {
       for (final fBytes in rawFrames) {
         final decoded = img.decodeImage(fBytes);
@@ -776,6 +891,15 @@ class StickerImageProcessor {
     } else {
       throw Exception('Data animasi tidak valid.');
     }
+
+    // Step 0: Merge identical consecutive frames (free size win, zero motion loss)
+    final deduped = _deduplicateConsecutiveFrames(
+      frameImages,
+      frameDurations,
+      maxDurationMs,
+    );
+    frameImages = deduped.frames;
+    frameDurations = deduped.durations;
 
     img.Image buildAnimationSequence(List<img.Image> frames, List<int> durations, int innerSize) {
       final animation = img.Image(
@@ -794,7 +918,8 @@ class StickerImageProcessor {
                 height: stickerDimension,
                 numChannels: 4,
               ));
-        targetFrame.frameDuration = durations[i].clamp(20, maxDurationMs);
+        // WhatsApp allows >= 8ms; clamping >= 16ms supports smooth playback up to 60 FPS
+        targetFrame.frameDuration = durations[i].clamp(16, maxDurationMs);
 
         int targetWidth;
         int targetHeight;
@@ -822,79 +947,150 @@ class StickerImageProcessor {
       return animation;
     }
 
-    ProcessedStickerResult? tryEncodeWithinLimit(
-      img.Image animation,
-      List<int> qualities, {
+    Uint8List encodeLossyWebp(
+      img.Image animation, {
+      required int quality,
+      int method = 2,
       int alphaQuality = 90,
     }) {
-      for (final quality in qualities) {
-        // Must explicitly pass lossless: false so quality parameter is applied by WebPEncoder.
-        final webpBytes = Uint8List.fromList(
-          img.encodeWebP(
-            animation,
-            singleFrame: false,
-            lossless: false,
-            exact: false,
-            quality: quality,
-            alphaQuality: alphaQuality,
-          ),
+      return Uint8List.fromList(
+        img.encodeWebP(
+          animation,
+          singleFrame: false,
+          lossless: false,
+          exact: false,
+          quality: quality,
+          method: method,
+          alphaQuality: alphaQuality,
+        ),
+      );
+    }
+
+    ProcessedStickerResult toResult(Uint8List bytes) => ProcessedStickerResult(
+          webpBytes: bytes,
+          width: stickerDimension,
+          height: stickerDimension,
+          byteSize: bytes.lengthInBytes,
         );
-        if (webpBytes.lengthInBytes <= maxBytes) {
-          return ProcessedStickerResult(
-            webpBytes: webpBytes,
-            width: stickerDimension,
-            height: stickerDimension,
-            byteSize: webpBytes.lengthInBytes,
-          );
+
+    // Step 1: 100% ORIGINAL FPS on full 480px inner canvas with adaptive quality jump
+    final fullAnim = buildAnimationSequence(frameImages, frameDurations, targetInnerBox);
+    final initialQuality = frameImages.length >= 60 ? 65 : 75;
+    final probeBytes = encodeLossyWebp(
+      fullAnim,
+      quality: initialQuality,
+      method: 2,
+      alphaQuality: 90,
+    );
+    if (probeBytes.lengthInBytes <= maxBytes) {
+      return toResult(probeBytes);
+    }
+
+    final overshoot = probeBytes.lengthInBytes / maxBytes;
+    final List<({int q, int m, int aq})> step1Tiers;
+    if (overshoot <= 1.25) {
+      step1Tiers = const [
+        (q: 55, m: 2, aq: 88),
+        (q: 40, m: 2, aq: 85),
+        (q: 28, m: 4, aq: 80),
+      ];
+    } else if (overshoot <= 2.0) {
+      step1Tiers = const [
+        (q: 40, m: 2, aq: 85),
+        (q: 25, m: 4, aq: 80),
+        (q: 18, m: 4, aq: 75),
+      ];
+    } else {
+      step1Tiers = const [
+        (q: 25, m: 4, aq: 80),
+        (q: 16, m: 4, aq: 75),
+      ];
+    }
+
+    for (final tier in step1Tiers) {
+      final candidate = encodeLossyWebp(
+        fullAnim,
+        quality: tier.q,
+        method: tier.m,
+        alphaQuality: tier.aq,
+      );
+      if (candidate.lengthInBytes <= maxBytes) {
+        return toResult(candidate);
+      }
+    }
+
+    // Step 2: STILL 100% ORIGINAL FPS — gently scale inner sticker box before ever dropping frames
+    for (final cfg in const [
+      (box: 400, tiers: [(q: 40, m: 2, aq: 80), (q: 24, m: 4, aq: 75)]),
+      (box: 336, tiers: [(q: 34, m: 2, aq: 75), (q: 20, m: 4, aq: 70)]),
+    ]) {
+      final scaledAnim = buildAnimationSequence(frameImages, frameDurations, cfg.box);
+      for (final tier in cfg.tiers) {
+        final candidate = encodeLossyWebp(
+          scaledAnim,
+          quality: tier.q,
+          method: tier.m,
+          alphaQuality: tier.aq,
+        );
+        if (candidate.lengthInBytes <= maxBytes) {
+          return toResult(candidate);
         }
       }
-      return null;
     }
 
-    // Step 1: Full 480px inner canvas with progressive lossy VP8 quality
-    final animation = buildAnimationSequence(frameImages, frameDurations, targetInnerBox);
-    final step1 = tryEncodeWithinLimit(animation, const [80, 65, 50, 35]);
-    if (step1 != null) return step1;
+    // Step 3: Last resort — smooth time-uniform FPS resampling (gradual, never abrupt 50% cliffs)
+    for (final plan in const [
+      (ratio: 0.75, maxCap: 60, box: 384, q1: 35, q2: 22),
+      (ratio: 0.55, maxCap: 42, box: 340, q1: 30, q2: 18),
+      (ratio: 0.38, maxCap: 28, box: 300, q1: 25, q2: 15),
+    ]) {
+      final targetCount =
+          (frameImages.length * plan.ratio).round().clamp(2, plan.maxCap);
+      if (targetCount >= frameImages.length) continue;
 
-    // Step 2: Reduce frame count (up to 14 frames) and scale down canvas progressively
-    final reduced14 = _downsampleFrames(frameImages, frameDurations, 14);
-    for (final boxSize in const [420, 340, 260]) {
-      final scaledAnim = buildAnimationSequence(
-        reduced14.frames,
-        reduced14.durations,
-        boxSize,
+      final resampled = _resampleGenericUniformly(
+        frameImages,
+        frameDurations,
+        targetCount,
+        maxDurationMs,
       );
-      final encoded = tryEncodeWithinLimit(
-        scaledAnim,
-        const [55, 40, 25],
-        alphaQuality: 80,
+      final resampledAnim = buildAnimationSequence(
+        resampled.items,
+        resampled.durations,
+        plan.box,
       );
-      if (encoded != null) return encoded;
+      for (final q in [plan.q1, plan.q2]) {
+        final candidate = encodeLossyWebp(
+          resampledAnim,
+          quality: q,
+          method: q >= 30 ? 2 : 4,
+          alphaQuality: 75,
+        );
+        if (candidate.lengthInBytes <= maxBytes) {
+          return toResult(candidate);
+        }
+      }
     }
 
-    // Fallback: cap to 10 frames and 240px inner canvas at low quality to respect 500 KB cap
-    final fallbackFrames = _downsampleFrames(frameImages, frameDurations, 10);
+    // Fallback: cap to 20 time-uniform frames at 256px inner box to guarantee <= 500 KB
+    final fallbackResampled = _resampleGenericUniformly(
+      frameImages,
+      frameDurations,
+      frameImages.length > 20 ? 20 : frameImages.length,
+      maxDurationMs,
+    );
     final fallbackAnim = buildAnimationSequence(
-      fallbackFrames.frames,
-      fallbackFrames.durations,
-      240,
+      fallbackResampled.items,
+      fallbackResampled.durations,
+      256,
     );
-    final webpBytes = Uint8List.fromList(
-      img.encodeWebP(
-        fallbackAnim,
-        singleFrame: false,
-        lossless: false,
-        exact: false,
-        quality: 15,
-        alphaQuality: 70,
-      ),
+    final webpBytes = encodeLossyWebp(
+      fallbackAnim,
+      quality: 15,
+      method: 4,
+      alphaQuality: 65,
     );
-    return ProcessedStickerResult(
-      webpBytes: webpBytes,
-      width: stickerDimension,
-      height: stickerDimension,
-      byteSize: webpBytes.lengthInBytes,
-    );
+    return toResult(webpBytes);
   }
 
   /// Quantize colors while strictly preserving the alpha channel.

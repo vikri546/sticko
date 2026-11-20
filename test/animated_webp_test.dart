@@ -487,8 +487,8 @@ void main() {
       expect(img.decodeWebP(res87a.webpBytes)!.numFrames, equals(2));
     });
 
-    test('Caps long high-FPS Giphy GIF (> 10s, 60 frames) cleanly under 10s and 500 KB', () async {
-      // 60 frames x 200ms = 12 seconds total
+    test('Caps long GIF (> 10s, 60 frames @ 200ms) cleanly under 10s without dropping frames in window', () async {
+      // 60 frames x 200ms = 12 seconds total -> first 50 frames equal exact 10,000 ms
       final gif = img.Image(width: 120, height: 120);
       gif.frameDuration = 200;
       img.fill(gif, color: img.ColorRgb8(255, 0, 0));
@@ -510,14 +510,86 @@ void main() {
       expect(result.byteSize, lessThanOrEqualTo(500 * 1024));
 
       final decoded = img.decodeWebP(result.webpBytes)!;
-      expect(decoded.numFrames, greaterThan(1));
-      expect(decoded.numFrames, lessThanOrEqualTo(32));
+      // Preserves all 50 frames inside the 10-second window (no arbitrary 28-frame cap!)
+      expect(decoded.numFrames, equals(50));
 
       int totalMs = 0;
       for (final f in decoded.frames) {
         totalMs += f.frameDuration;
       }
       expect(totalMs, lessThanOrEqualTo(10000));
+    });
+
+    test('Preserves full original 25 FPS (50 frames @ 40ms) and 20 FPS (60 frames @ 50ms) smoothly', () async {
+      // 1. 2-second 25 FPS GIF (50 moving frames x 40ms)
+      final gif25 = img.Image(width: 160, height: 160);
+      gif25.frameDuration = 40;
+      img.fill(gif25, color: img.ColorRgb8(20, 20, 30));
+      img.fillCircle(gif25, x: 20, y: 80, radius: 18, color: img.ColorRgb8(255, 180, 0));
+      for (int i = 1; i < 50; i++) {
+        final f = img.Image(width: 160, height: 160);
+        f.frameDuration = 40;
+        img.fill(f, color: img.ColorRgb8(20, 20, 30));
+        img.fillCircle(f, x: 20 + (i * 2), y: 80, radius: 18, color: img.ColorRgb8(255, 180, 0));
+        gif25.addFrame(f);
+      }
+      final res25 = await StickerImageProcessor.processGifToStickerWebp(
+        gifBytes: Uint8List.fromList(img.encodeGif(gif25)),
+      );
+      expect(res25.byteSize, lessThanOrEqualTo(500 * 1024));
+      final dec25 = img.decodeWebP(res25.webpBytes)!;
+      expect(dec25.numFrames, equals(50));
+      expect(dec25.frames.first.frameDuration, equals(40));
+
+      // 2. 3-second 20 FPS GIF (60 moving frames x 50ms — previously halved twice down to 15 frames!)
+      final gif20 = img.Image(width: 160, height: 120);
+      gif20.frameDuration = 50;
+      img.fill(gif20, color: img.ColorRgb8(18, 140, 126));
+      img.fillCircle(gif20, x: 15, y: 60, radius: 14, color: img.ColorRgb8(255, 255, 255));
+      for (int i = 1; i < 60; i++) {
+        final f = img.Image(width: 160, height: 120);
+        f.frameDuration = 50;
+        img.fill(f, color: img.ColorRgb8(18, 140, 126));
+        img.fillCircle(f, x: 15 + (i * 2), y: 60, radius: 14, color: img.ColorRgb8(255, 255, 255));
+        gif20.addFrame(f);
+      }
+      final res20 = await StickerImageProcessor.processGifToStickerWebp(
+        gifBytes: Uint8List.fromList(img.encodeGif(gif20)),
+      );
+      expect(res20.byteSize, lessThanOrEqualTo(500 * 1024));
+      final dec20 = img.decodeWebP(res20.webpBytes)!;
+      expect(dec20.numFrames, equals(60));
+      expect(dec20.frames.first.frameDuration, equals(50));
+    });
+
+    test('Merges consecutive identical GIF frames while preserving exact total duration', () async {
+      final gif = img.Image(width: 100, height: 100);
+      gif.frameDuration = 50;
+      img.fill(gif, color: img.ColorRgb8(255, 0, 0));
+
+      // 3 identical green frames in a row (50ms x 3 = 150ms)
+      for (int i = 0; i < 3; i++) {
+        final dup = img.Image(width: 100, height: 100);
+        dup.frameDuration = 50;
+        img.fill(dup, color: img.ColorRgb8(0, 255, 0));
+        gif.addFrame(dup);
+      }
+
+      // Final blue frame (50ms)
+      final last = img.Image(width: 100, height: 100);
+      last.frameDuration = 50;
+      img.fill(last, color: img.ColorRgb8(0, 0, 255));
+      gif.addFrame(last);
+
+      final result = await StickerImageProcessor.processGifToStickerWebp(
+        gifBytes: Uint8List.fromList(img.encodeGif(gif)),
+      );
+      final decoded = img.decodeWebP(result.webpBytes)!;
+      // 5 frames collapsed to 3 unique frames (Red 50ms, Green 150ms, Blue 50ms)
+      expect(decoded.numFrames, equals(3));
+      expect(decoded.frames[0].frameDuration, equals(50));
+      expect(decoded.frames[1].frameDuration, equals(150));
+      expect(decoded.frames[2].frameDuration, equals(50));
     });
   });
 }
