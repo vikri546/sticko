@@ -1,0 +1,18 @@
+{
+  "name": "sticko-audio-bot",
+  "version": "1.1.0",
+  "description": "Centralized Termux WhatsApp Audio Sticker Bot & HTTP Bridge for Sticko APK (Pairing Code Only)",
+  "type": "module",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "reset-auth": "rm -rf ./auth_session"
+  },
+  "dependencies": {
+    "@whiskeysockets/baileys": "^6.7.16",
+    "pino": "^9.6.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
