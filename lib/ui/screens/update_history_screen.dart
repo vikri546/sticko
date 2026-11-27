@@ -213,7 +213,7 @@ class _UpdateHistoryScreenState extends State<UpdateHistoryScreen> {
                 ),
                 const SizedBox(height: 3),
                 Text(
-                  'Total ${_releases.length} versi rilis tercatat • Pilih tombol Lihat pada versi untuk membuka informasi fitur dan perbaikan bug.',
+                  '${_releases.length} rilis versi tercatat • Ketuk Lihat untuk detail fitur & perbaikan.',
                   style: GoogleFonts.plusJakartaSans(
                     fontSize: 12,
                     color: isDark ? Colors.grey[300] : Colors.grey[700],

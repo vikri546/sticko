@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/foundation.dart';
@@ -9,15 +10,21 @@ import 'package:url_launcher/url_launcher.dart';
 class StickerItem {
   final String imageFileName;
   final List<String> emojis;
+  final String? audioFileName;
+  final int? durationMs;
   final DateTime? createdAt;
   final DateTime? updatedAt;
 
   const StickerItem({
     required this.imageFileName,
     this.emojis = const ['😀'],
+    this.audioFileName,
+    this.durationMs,
     this.createdAt,
     this.updatedAt,
   });
+
+  bool get hasAudio => audioFileName != null && audioFileName!.isNotEmpty;
 
   /// Resolves the creation timestamp from [createdAt], filename microsecond pattern, or file metadata.
   DateTime? resolveCreatedAt([String? filePath]) {
@@ -57,6 +64,9 @@ class StickerItem {
   Map<String, dynamic> toJson() => {
         'image_file': imageFileName,
         'emojis': emojis,
+        if (audioFileName != null && audioFileName!.isNotEmpty)
+          'audio_file': audioFileName,
+        if (durationMs != null) 'duration_ms': durationMs,
         if (createdAt != null) 'created_at': createdAt!.toIso8601String(),
         if (updatedAt != null) 'updated_at': updatedAt!.toIso8601String(),
       };
@@ -70,6 +80,8 @@ class StickerItem {
               ?.map((e) => e.toString())
               .toList() ??
           ['😀'],
+      audioFileName: json['audio_file'] as String?,
+      durationMs: (json['duration_ms'] as num?)?.toInt(),
       createdAt: createdRaw != null ? DateTime.tryParse(createdRaw) : null,
       updatedAt: updatedRaw != null ? DateTime.tryParse(updatedRaw) : null,
     );
@@ -137,6 +149,7 @@ class StickerPack {
   final String imageDataVersion;
   final bool avoidCache;
   final bool animatedStickerPack;
+  final bool videoAudioStickerPack;
   final bool isDeveloperPack;
   final List<StickerItem> stickers;
 
@@ -148,6 +161,7 @@ class StickerPack {
     this.imageDataVersion = '1',
     this.avoidCache = false,
     this.animatedStickerPack = false,
+    this.videoAudioStickerPack = false,
     this.isDeveloperPack = false,
     this.stickers = const [],
   });
@@ -165,6 +179,7 @@ class StickerPack {
     String? imageDataVersion,
     bool? avoidCache,
     bool? animatedStickerPack,
+    bool? videoAudioStickerPack,
     bool? isDeveloperPack,
     List<StickerItem>? stickers,
   }) {
@@ -176,6 +191,8 @@ class StickerPack {
       imageDataVersion: imageDataVersion ?? this.imageDataVersion,
       avoidCache: avoidCache ?? this.avoidCache,
       animatedStickerPack: animatedStickerPack ?? this.animatedStickerPack,
+      videoAudioStickerPack:
+          videoAudioStickerPack ?? this.videoAudioStickerPack,
       isDeveloperPack: isDeveloperPack ?? this.isDeveloperPack,
       stickers: stickers ?? this.stickers,
     );
@@ -188,12 +205,16 @@ class StickerPack {
         'tray_image_file': trayImageFile,
         'image_data_version': imageDataVersion,
         'avoid_cache': avoidCache,
-        'animated_sticker_pack': animatedStickerPack,
+        'animated_sticker_pack': animatedStickerPack || videoAudioStickerPack,
+        'video_audio_sticker_pack': videoAudioStickerPack,
         'is_developer_pack': isDeveloperPack,
         'stickers': stickers.map((s) => s.toJson()).toList(),
       };
 
   factory StickerPack.fromJson(Map<String, dynamic> json) {
+    final isVideoAudio = json['video_audio_sticker_pack'] as bool? ?? false;
+    final isAnimated =
+        (json['animated_sticker_pack'] as bool? ?? false) || isVideoAudio;
     return StickerPack(
       identifier: json['identifier'] as String,
       name: json['name'] as String,
@@ -201,7 +222,8 @@ class StickerPack {
       trayImageFile: json['tray_image_file'] as String? ?? 'tray.png',
       imageDataVersion: json['image_data_version'] as String? ?? '1',
       avoidCache: json['avoid_cache'] as bool? ?? false,
-      animatedStickerPack: json['animated_sticker_pack'] as bool? ?? false,
+      animatedStickerPack: isAnimated,
+      videoAudioStickerPack: isVideoAudio,
       isDeveloperPack: json['is_developer_pack'] as bool? ?? false,
       stickers: (json['stickers'] as List<dynamic>?)
               ?.map((s) => StickerItem.fromJson(s as Map<String, dynamic>))
@@ -209,6 +231,33 @@ class StickerPack {
           [],
     );
   }
+}
+
+/// Structured result from native Android video frame & audio track extraction.
+class ExtractedVideoStickerData {
+  final bool ok;
+  final bool hasAudio;
+  final List<Uint8List> frames;
+  final int frameDurationMs;
+  final int totalDurationMs;
+  final int originalDurationMs;
+  final String? audioFilePath;
+  final String audioExtension;
+  final String? errorCode;
+  final String? errorMessage;
+
+  const ExtractedVideoStickerData({
+    required this.ok,
+    this.hasAudio = false,
+    this.frames = const [],
+    this.frameDurationMs = 100,
+    this.totalDurationMs = 0,
+    this.originalDurationMs = 0,
+    this.audioFilePath,
+    this.audioExtension = 'm4a',
+    this.errorCode,
+    this.errorMessage,
+  });
 }
 
 /// Service that communicates directly with Android native WhatsApp Sticker Protocol via MethodChannel.
@@ -220,9 +269,35 @@ class WhatsAppStickersService {
   @visibleForTesting
   static Future<bool> Function()? mockConnectivityChecker;
 
+  /// Reactive path of the sticker audio currently playing (null when stopped).
+  static final ValueNotifier<String?> activePlayingAudioPath =
+      ValueNotifier<String?>(null);
+
+  static Timer? _audioResetTimer;
+  static bool _audioCallbackRegistered = false;
+
+  static void _ensureAudioCallbackHandler() {
+    if (_audioCallbackRegistered) return;
+    try {
+      _channel.setMethodCallHandler((call) async {
+        if (call.method == 'onStickerAudioStopped') {
+          _audioResetTimer?.cancel();
+          _audioResetTimer = null;
+          activePlayingAudioPath.value = null;
+        }
+      });
+      _audioCallbackRegistered = true;
+    } catch (_) {
+      // Binding may not be initialized in pure Dart unit tests
+    }
+  }
+
   /// Reset test overrides.
   static void resetForTesting() {
     mockConnectivityChecker = null;
+    _audioResetTimer?.cancel();
+    _audioResetTimer = null;
+    activePlayingAudioPath.value = null;
   }
 
   /// Show native Android system Toast for double-back-to-exit prompt.
@@ -459,5 +534,121 @@ class WhatsAppStickersService {
     } catch (_) {
       return [];
     }
+  }
+
+  /// Extract visual frames and audio track (<= 10s) from a video file natively on Android.
+  static Future<ExtractedVideoStickerData> extractVideoStickerWithAudio({
+    required String videoPath,
+    required String outputDirPath,
+    int maxDurationMs = 10000,
+  }) async {
+    try {
+      final res = await _channel.invokeMethod<Map<dynamic, dynamic>>(
+        'extractVideoStickerWithAudio',
+        {
+          'videoPath': videoPath,
+          'outputDirPath': outputDirPath,
+          'maxDurationMs': maxDurationMs,
+        },
+      );
+      if (res == null) {
+        return const ExtractedVideoStickerData(
+          ok: false,
+          errorCode: 'UNAVAILABLE',
+          errorMessage: 'Layanan pemrosesan video tidak tersedia.',
+        );
+      }
+
+      final ok = res['ok'] == true;
+      final hasAudio = res['hasAudio'] == true;
+      final rawFrames = res['frames'] as List<dynamic>? ?? const [];
+      final frames = rawFrames
+          .whereType<Uint8List>()
+          .toList();
+      final frameDurationMs = (res['frameDurationMs'] as num?)?.toInt() ?? 100;
+      final totalDurationMs = (res['totalDurationMs'] as num?)?.toInt() ?? 0;
+      final originalDurationMs =
+          (res['originalDurationMs'] as num?)?.toInt() ?? totalDurationMs;
+
+      return ExtractedVideoStickerData(
+        ok: ok,
+        hasAudio: hasAudio,
+        frames: frames,
+        frameDurationMs: frameDurationMs,
+        totalDurationMs: totalDurationMs,
+        originalDurationMs: originalDurationMs,
+        audioFilePath: res['audioFilePath'] as String?,
+        audioExtension: (res['audioExtension'] as String?)?.trim().isNotEmpty == true
+            ? (res['audioExtension'] as String).trim()
+            : 'm4a',
+        errorCode: res['errorCode'] as String?,
+        errorMessage: res['errorMessage'] as String?,
+      );
+    } catch (e) {
+      return ExtractedVideoStickerData(
+        ok: false,
+        errorCode: 'EXTRACTION_ERROR',
+        errorMessage: 'Gagal memproses berkas video: $e',
+      );
+    }
+  }
+
+  /// Play a sticker's companion audio track natively (capped at [maxDurationMs], default 10s).
+  static Future<bool> playStickerAudio(
+    String audioPath, {
+    int maxDurationMs = 10000,
+  }) async {
+    _ensureAudioCallbackHandler();
+    _audioResetTimer?.cancel();
+    _audioResetTimer = null;
+
+    try {
+      final cappedMs = maxDurationMs.clamp(500, 10000);
+      final started = await _channel.invokeMethod<bool>(
+            'playStickerAudio',
+            {
+              'audioPath': audioPath,
+              'maxDurationMs': cappedMs,
+            },
+          ) ??
+          false;
+
+      if (started) {
+        activePlayingAudioPath.value = audioPath;
+        _audioResetTimer = Timer(Duration(milliseconds: cappedMs + 150), () {
+          if (activePlayingAudioPath.value == audioPath) {
+            activePlayingAudioPath.value = null;
+          }
+        });
+      } else {
+        activePlayingAudioPath.value = null;
+      }
+      return started;
+    } catch (_) {
+      activePlayingAudioPath.value = null;
+      return false;
+    }
+  }
+
+  /// Stop any currently playing sticker audio track.
+  static Future<void> stopStickerAudio() async {
+    _audioResetTimer?.cancel();
+    _audioResetTimer = null;
+    activePlayingAudioPath.value = null;
+    try {
+      await _channel.invokeMethod<bool>('stopStickerAudio');
+    } catch (_) {}
+  }
+
+  /// Toggle tap-to-play audio for a sticker (plays if stopped, stops if already playing).
+  static Future<bool> toggleStickerAudio(
+    String audioPath, {
+    int maxDurationMs = 10000,
+  }) async {
+    if (activePlayingAudioPath.value == audioPath) {
+      await stopStickerAudio();
+      return false;
+    }
+    return playStickerAudio(audioPath, maxDurationMs: maxDurationMs);
   }
 }

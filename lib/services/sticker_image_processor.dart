@@ -1,10 +1,12 @@
 import 'dart:io';
 import 'dart:isolate';
+import 'dart:math' as math;
 import 'dart:ui' as ui;
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
 import 'package:image/image.dart' as img;
 import 'package:image_picker/image_picker.dart';
+import 'package:sticker_flutter/services/whatsapp_stickers_service.dart';
 
 /// Thrown when a `.gif` file only contains a single static frame instead of animation.
 class SingleFrameGifException implements Exception {
@@ -13,6 +15,40 @@ class SingleFrameGifException implements Exception {
 
   @override
   String toString() => message;
+}
+
+/// Thrown when a selected video file does not contain any audio track.
+class VideoNoAudioException implements Exception {
+  final String message;
+  const VideoNoAudioException(this.message);
+
+  @override
+  String toString() => message;
+}
+
+/// Thrown when a selected video file exceeds the maximum allowed 10-second duration.
+class VideoDurationExceededException implements Exception {
+  final String message;
+  final int durationMs;
+  const VideoDurationExceededException(this.message, {this.durationMs = 0});
+
+  @override
+  String toString() => message;
+}
+
+/// Data class holding processed video-with-audio sticker details.
+class ProcessedVideoAudioStickerResult {
+  final Uint8List webpBytes;
+  final String tempAudioFilePath;
+  final String audioExtension;
+  final int durationMs;
+
+  const ProcessedVideoAudioStickerResult({
+    required this.webpBytes,
+    required this.tempAudioFilePath,
+    required this.audioExtension,
+    required this.durationMs,
+  });
 }
 
 /// Data class holding processed sticker details.
@@ -138,6 +174,117 @@ class StickerImageProcessor {
   /// Check if file name or path has `.gif` extension.
   static bool isGifFile(String pathOrName) {
     return pathOrName.toLowerCase().trim().endsWith('.gif');
+  }
+
+  /// Supported video container extensions for Video+Audio stickers.
+  static const List<String> supportedVideoExtensions = [
+    'mp4',
+    'mov',
+    'webm',
+    'mkv',
+    '3gp',
+    'm4v',
+  ];
+
+  /// Check if file name or path has a supported video extension (`.mp4`, `.mov`, `.webm`, `.mkv`, `.3gp`, `.m4v`).
+  static bool isSupportedVideoFile(String pathOrName) {
+    final lower = pathOrName.toLowerCase().trim();
+    return supportedVideoExtensions.any((ext) => lower.endsWith('.$ext'));
+  }
+
+  /// Pick a single video file (`.mp4` and similar formats) without pre-compression.
+  static Future<PlatformFile?> pickVideoFile() async {
+    try {
+      return await FilePicker.pickFile(
+        type: FileType.video,
+        compressionQuality: 0,
+      );
+    } catch (e) {
+      debugPrint('Error picking video file: $e');
+      return null;
+    }
+  }
+
+  /// Pick one or more video files (`.mp4` and similar formats) from storage/gallery.
+  static Future<List<PlatformFile>> pickMultipleVideoFiles({int? limit}) async {
+    if (limit != null && limit <= 1) {
+      final single = await pickVideoFile();
+      return single != null ? [single] : [];
+    }
+
+    try {
+      final files = await FilePicker.pickFiles(
+        type: FileType.video,
+        compressionQuality: 0,
+      );
+      if (limit != null && files.length > limit) {
+        return files.take(limit).toList();
+      }
+      return files;
+    } catch (e) {
+      debugPrint('Error picking multiple video files: $e');
+      return [];
+    }
+  }
+
+  /// Process a video file (`<= 10s` with audio) into a compliant 512x512 animated WebP
+  /// (`<= 500 KB`) paired with its extracted native audio track.
+  static Future<ProcessedVideoAudioStickerResult> processVideoToStickerWithAudio({
+    required String videoPath,
+    required String tempOutputDirPath,
+    int maxDurationMs = 10000,
+    int maxBytes = maxAnimatedFileSizeBytes,
+  }) async {
+    final extracted = await WhatsAppStickersService.extractVideoStickerWithAudio(
+      videoPath: videoPath,
+      outputDirPath: tempOutputDirPath,
+      maxDurationMs: maxDurationMs,
+    );
+
+    if (!extracted.ok) {
+      if (extracted.errorCode == 'NO_AUDIO') {
+        throw VideoNoAudioException(
+          extracted.errorMessage ??
+              'Video yang dipilih tidak memiliki suara (audio). Pilih video dengan suara.',
+        );
+      }
+      if (extracted.errorCode == 'DURATION_EXCEEDED') {
+        final secs = (extracted.originalDurationMs / 1000).toStringAsFixed(1);
+        throw VideoDurationExceededException(
+          'Durasi video ($secs detik) melebihi batas maksimal 10 detik.',
+          durationMs: extracted.originalDurationMs,
+        );
+      }
+      throw Exception(
+        extracted.errorMessage ?? 'Gagal memproses berkas video.',
+      );
+    }
+
+    if (!extracted.hasAudio ||
+        extracted.audioFilePath == null ||
+        extracted.audioFilePath!.isEmpty) {
+      throw const VideoNoAudioException(
+        'Video yang dipilih tidak memiliki suara (audio). Pilih video dengan suara.',
+      );
+    }
+
+    if (extracted.frames.isEmpty) {
+      throw Exception('Gagal mengekstrak frame visual dari berkas video.');
+    }
+
+    final processedWebp = await processAnimatedToStickerWebp(
+      frames: extracted.frames,
+      frameDurationMs: extracted.frameDurationMs,
+      maxDurationMs: maxDurationMs,
+      maxBytes: maxBytes,
+    );
+
+    return ProcessedVideoAudioStickerResult(
+      webpBytes: processedWebp.webpBytes,
+      tempAudioFilePath: extracted.audioFilePath!,
+      audioExtension: extracted.audioExtension,
+      durationMs: extracted.totalDurationMs.clamp(100, maxDurationMs),
+    );
   }
 
   /// Check if byte array starts with GIF magic header (GIF87a / GIF89a)
@@ -1205,5 +1352,296 @@ class StickerImageProcessor {
     final file = File('$packDirectoryPath/$fileName');
     file.writeAsBytesSync(bytes);
     return file;
+  }
+
+  /// Compute the automatic scale factor needed to make non-transparent video content
+  /// fill the entire 512x512 square canvas edge-to-edge (`Penuh` / `Bulat` crop modes).
+  static double computeContentFillScale(Uint8List bytes) {
+    try {
+      final frame0 = img.decodeImage(bytes, frame: 0);
+      if (frame0 == null || frame0.width <= 0 || frame0.height <= 0) {
+        return 1.0;
+      }
+      final rgba = _toStandaloneRgbaFrame(frame0);
+      int minX = rgba.width;
+      int maxX = -1;
+      int minY = rgba.height;
+      int maxY = -1;
+
+      for (int y = 0; y < rgba.height; y++) {
+        for (int x = 0; x < rgba.width; x++) {
+          if (rgba.getPixel(x, y).a > 8) {
+            if (x < minX) minX = x;
+            if (x > maxX) maxX = x;
+            if (y < minY) minY = y;
+            if (y > maxY) maxY = y;
+          }
+        }
+      }
+
+      if (maxX < minX || maxY < minY) return 1.0;
+      final contentW = (maxX - minX + 1).toDouble();
+      final contentH = (maxY - minY + 1).toDouble();
+      final scaleX = rgba.width / contentW;
+      final scaleY = rgba.height / contentH;
+      return math.max(scaleX, scaleY).clamp(1.0, 3.5);
+    } catch (_) {
+      return 1.0;
+    }
+  }
+
+  /// Apply interactive crop (`Fit` / `Penuh` / `Bulat`), pan offset, and zoom scale
+  /// across every frame of an animated WebP sticker while keeping `512x512` and `<= 500 KB`.
+  static Future<Uint8List> transformAnimatedStickerWebp({
+    required Uint8List webpBytes,
+    required double userScale,
+    required double panX,
+    required double panY,
+    required double canvasSize,
+    double modeBaseScale = 1.0,
+    bool circleMask = false,
+    int maxBytes = maxAnimatedFileSizeBytes,
+  }) async {
+    return compute(_isolateTransformAnimatedSticker, {
+      'bytes': webpBytes,
+      'userScale': userScale,
+      'panX': panX,
+      'panY': panY,
+      'canvasSize': canvasSize,
+      'modeBaseScale': modeBaseScale,
+      'circleMask': circleMask,
+      'maxBytes': maxBytes,
+    });
+  }
+
+  static Uint8List _isolateTransformAnimatedSticker(Map<String, dynamic> args) {
+    final bytes = args['bytes'] as Uint8List;
+    final userScale = ((args['userScale'] as num?)?.toDouble() ?? 1.0).clamp(0.25, 6.0);
+    final panX = (args['panX'] as num?)?.toDouble() ?? 0.0;
+    final panY = (args['panY'] as num?)?.toDouble() ?? 0.0;
+    final canvasSize = ((args['canvasSize'] as num?)?.toDouble() ?? 240.0).clamp(1.0, 4096.0);
+    final modeBaseScale = ((args['modeBaseScale'] as num?)?.toDouble() ?? 1.0).clamp(0.25, 6.0);
+    final circleMask = args['circleMask'] == true;
+    final maxBytes = (args['maxBytes'] as int?) ?? maxAnimatedFileSizeBytes;
+
+    final decoded = img.decodeWebP(bytes) ?? img.decodeImage(bytes);
+    if (decoded == null) return bytes;
+
+    final srcFrames = <img.Image>[];
+    final durations = <int>[];
+    final frameCount = decoded.numFrames;
+    for (int i = 0; i < frameCount; i++) {
+      final f = decoded.frames[i];
+      srcFrames.add(_toStandaloneRgbaFrame(f));
+      final d = f.frameDuration;
+      durations.add(d >= 16 ? d : 100);
+    }
+    if (srcFrames.isEmpty) return bytes;
+
+    List<img.Image> renderTransformedFrames(int targetDim) {
+      final srcW = srcFrames.first.width;
+      final srcH = srcFrames.first.height;
+      final halfCanvas = canvasSize * 0.5;
+      final outToCanvas = canvasSize / targetDim;
+
+      // Precompute source X/Y coordinates & bilinear weights once for all frames
+      final x0Arr = Int32List(targetDim);
+      final x1Arr = Int32List(targetDim);
+      final wxArr = Int32List(targetDim); // 0..256 fixed-point
+      final xValid = Uint8List(targetDim);
+
+      final y0Arr = Int32List(targetDim);
+      final y1Arr = Int32List(targetDim);
+      final wyArr = Int32List(targetDim);
+      final yValid = Uint8List(targetDim);
+
+      for (int ox = 0; ox < targetDim; ox++) {
+        final vx = (ox + 0.5) * outToCanvas;
+        final cx = (vx - panX) / userScale;
+        final nx = (cx - halfCanvas) / (halfCanvas * modeBaseScale);
+        final sx = (nx + 1.0) * 0.5 * srcW - 0.5;
+        if (sx >= -0.5 && sx <= srcW - 0.5) {
+          xValid[ox] = 1;
+          final clamped = sx.clamp(0.0, (srcW - 1).toDouble());
+          final x0 = clamped.floor();
+          x0Arr[ox] = x0;
+          x1Arr[ox] = (x0 + 1 < srcW) ? x0 + 1 : x0;
+          wxArr[ox] = ((clamped - x0) * 256.0).round().clamp(0, 256);
+        }
+      }
+
+      for (int oy = 0; oy < targetDim; oy++) {
+        final vy = (oy + 0.5) * outToCanvas;
+        final cy = (vy - panY) / userScale;
+        final ny = (cy - halfCanvas) / (halfCanvas * modeBaseScale);
+        final sy = (ny + 1.0) * 0.5 * srcH - 0.5;
+        if (sy >= -0.5 && sy <= srcH - 0.5) {
+          yValid[oy] = 1;
+          final clamped = sy.clamp(0.0, (srcH - 1).toDouble());
+          final y0 = clamped.floor();
+          y0Arr[oy] = y0;
+          y1Arr[oy] = (y0 + 1 < srcH) ? y0 + 1 : y0;
+          wyArr[oy] = ((clamped - y0) * 256.0).round().clamp(0, 256);
+        }
+      }
+
+      // Precompute smooth circular alpha mask (0..256) when circleMask is enabled
+      Int32List? circleAlphaMask;
+      if (circleMask) {
+        circleAlphaMask = Int32List(targetDim * targetDim);
+        final center = (targetDim - 1) * 0.5;
+        final radius = targetDim * 0.5;
+        for (int oy = 0; oy < targetDim; oy++) {
+          final dy = oy - center;
+          final rowOffset = oy * targetDim;
+          for (int ox = 0; ox < targetDim; ox++) {
+            final dx = ox - center;
+            final dist = math.sqrt(dx * dx + dy * dy);
+            if (dist <= radius - 1.0) {
+              circleAlphaMask[rowOffset + ox] = 256;
+            } else if (dist < radius + 0.5) {
+              circleAlphaMask[rowOffset + ox] =
+                  (((radius + 0.5 - dist) / 1.5) * 256.0).round().clamp(0, 256);
+            }
+          }
+        }
+      }
+
+      final rendered = <img.Image>[];
+      for (int fIdx = 0; fIdx < srcFrames.length; fIdx++) {
+        final src = srcFrames[fIdx];
+        final srcBuf = src.toUint8List();
+        final dst = img.Image(
+          width: stickerDimension,
+          height: stickerDimension,
+          numChannels: 4,
+        );
+        final dstBuf = dst.toUint8List();
+        final padOffset = (stickerDimension - targetDim) ~/ 2;
+
+        for (int oy = 0; oy < targetDim; oy++) {
+          if (yValid[oy] == 0) continue;
+          final y0 = y0Arr[oy];
+          final y1 = y1Arr[oy];
+          final wy = wyArr[oy];
+          final iwy = 256 - wy;
+          final dstRow = ((oy + padOffset) * stickerDimension + padOffset) * 4;
+          final maskRow = oy * targetDim;
+
+          for (int ox = 0; ox < targetDim; ox++) {
+            if (xValid[ox] == 0) continue;
+            final maskVal = circleAlphaMask != null ? circleAlphaMask[maskRow + ox] : 256;
+            if (maskVal == 0) continue;
+
+            final x0 = x0Arr[ox];
+            final x1 = x1Arr[ox];
+            final wx = wxArr[ox];
+            final iwx = 256 - wx;
+
+            final p00 = (y0 * srcW + x0) * 4;
+            final p10 = (y0 * srcW + x1) * 4;
+            final p01 = (y1 * srcW + x0) * 4;
+            final p11 = (y1 * srcW + x1) * 4;
+
+            final w00 = iwx * iwy;
+            final w10 = wx * iwy;
+            final w01 = iwx * wy;
+            final w11 = wx * wy;
+
+            final dIdx = dstRow + ox * 4;
+            dstBuf[dIdx] = (srcBuf[p00] * w00 +
+                    srcBuf[p10] * w10 +
+                    srcBuf[p01] * w01 +
+                    srcBuf[p11] * w11 +
+                    32768) >>
+                16;
+            dstBuf[dIdx + 1] = (srcBuf[p00 + 1] * w00 +
+                    srcBuf[p10 + 1] * w10 +
+                    srcBuf[p01 + 1] * w01 +
+                    srcBuf[p11 + 1] * w11 +
+                    32768) >>
+                16;
+            dstBuf[dIdx + 2] = (srcBuf[p00 + 2] * w00 +
+                    srcBuf[p10 + 2] * w10 +
+                    srcBuf[p01 + 2] * w01 +
+                    srcBuf[p11 + 2] * w11 +
+                    32768) >>
+                16;
+            final rawAlpha = (srcBuf[p00 + 3] * w00 +
+                    srcBuf[p10 + 3] * w10 +
+                    srcBuf[p01 + 3] * w01 +
+                    srcBuf[p11 + 3] * w11 +
+                    32768) >>
+                16;
+            dstBuf[dIdx + 3] = (rawAlpha * maskVal) >> 8;
+          }
+        }
+        rendered.add(dst);
+      }
+      return rendered;
+    }
+
+    Uint8List encodeAnim(List<img.Image> frames, List<int> durs, int quality, int method, int alphaQ) {
+      final anim = frames.first.clone(noAnimation: true);
+      anim.loopCount = 0;
+      anim.frameDuration = durs.first;
+      for (int i = 1; i < frames.length; i++) {
+        final f = anim.addFrame(frames[i]);
+        f.frameDuration = durs[i];
+      }
+      return Uint8List.fromList(
+        img.encodeWebP(
+          anim,
+          singleFrame: false,
+          lossless: false,
+          exact: false,
+          quality: quality,
+          method: method,
+          alphaQuality: alphaQ,
+        ),
+      );
+    }
+
+    // Try full 512x512 canvas first across quality tiers
+    final fullFrames = renderTransformedFrames(stickerDimension);
+    for (final tier in const [
+      (q: 72, m: 2, aq: 88),
+      (q: 50, m: 2, aq: 84),
+      (q: 34, m: 4, aq: 78),
+      (q: 22, m: 4, aq: 72),
+      (q: 15, m: 4, aq: 65),
+    ]) {
+      final encoded = encodeAnim(fullFrames, durations, tier.q, tier.m, tier.aq);
+      if (encoded.lengthInBytes <= maxBytes) {
+        return encoded;
+      }
+    }
+
+    // Fallback for dense high-frame-count clips: time-uniform resample while preserving crop/zoom
+    for (final ratio in const [0.7, 0.5, 0.35]) {
+      final targetCount = (fullFrames.length * ratio).round().clamp(2, 45);
+      if (targetCount >= fullFrames.length) continue;
+      final resampled = _resampleGenericUniformly(
+        fullFrames,
+        durations,
+        targetCount,
+        10000,
+      );
+      for (final q in const [32, 20, 14]) {
+        final encoded = encodeAnim(resampled.items, resampled.durations, q, 4, 70);
+        if (encoded.lengthInBytes <= maxBytes) {
+          return encoded;
+        }
+      }
+    }
+
+    final compactFrames = renderTransformedFrames(360);
+    final capped = _resampleGenericUniformly(
+      compactFrames,
+      durations,
+      compactFrames.length > 20 ? 20 : compactFrames.length,
+      10000,
+    );
+    return encodeAnim(capped.items, capped.durations, 14, 4, 65);
   }
 }

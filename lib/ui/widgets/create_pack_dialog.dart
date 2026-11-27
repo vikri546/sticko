@@ -6,6 +6,12 @@ import 'package:sticker_flutter/services/sticker_pack_manager.dart';
 import 'package:sticker_flutter/services/whatsapp_stickers_service.dart';
 import 'package:sticker_flutter/ui/widgets/app_notification.dart';
 
+enum _PackMediaType {
+  staticImage,
+  animatedGif,
+  videoAudio,
+}
+
 /// Modern Bottom Sheet Modal to create a new sticker pack.
 class CreatePackDialog extends StatefulWidget {
   const CreatePackDialog({super.key});
@@ -29,7 +35,7 @@ class _CreatePackDialogState extends State<CreatePackDialog> {
   late final TextEditingController _nameController;
   late final TextEditingController _publisherController;
   bool _isCreating = false;
-  bool _animatedStickerPack = false;
+  _PackMediaType _selectedType = _PackMediaType.staticImage;
 
   @override
   void initState() {
@@ -66,7 +72,8 @@ class _CreatePackDialogState extends State<CreatePackDialog> {
         publisher: _publisherController.text.trim().isEmpty
             ? 'Sticker Maker'
             : _publisherController.text.trim(),
-        animatedStickerPack: _animatedStickerPack,
+        animatedStickerPack: _selectedType != _PackMediaType.staticImage,
+        videoAudioStickerPack: _selectedType == _PackMediaType.videoAudio,
       );
       if (mounted) {
         Navigator.of(context).pop<StickerPack>(newPack);
@@ -235,7 +242,7 @@ class _CreatePackDialogState extends State<CreatePackDialog> {
 
                         const SizedBox(height: 18),
 
-                        // 3. Field: Tipe Paket Stiker (Statis 100KB vs Animasi 500KB)
+                        // 3. Field: Tipe Paket Stiker (Gambar Statis, Animasi GIF, atau Video + Suara)
                         _buildFieldLabel(
                           label: 'TIPE PAKET STIKER (BATAS UKURAN)',
                           isRequired: false,
@@ -245,120 +252,84 @@ class _CreatePackDialogState extends State<CreatePackDialog> {
                         Row(
                           children: [
                             Expanded(
-                              child: InkWell(
-                                onTap: () => setState(() => _animatedStickerPack = false),
-                                borderRadius: BorderRadius.circular(16),
-                                child: Container(
-                                  padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 12),
-                                  decoration: BoxDecoration(
-                                    color: !_animatedStickerPack
-                                        ? const Color(0xFF25D366).withAlpha(isDark ? 50 : 25)
-                                        : (isDark ? Colors.white.withAlpha(10) : Colors.black.withAlpha(5)),
-                                    borderRadius: BorderRadius.circular(16),
-                                    border: Border.all(
-                                      color: !_animatedStickerPack
-                                          ? const Color(0xFF25D366)
-                                          : (isDark ? Colors.white12 : Colors.black12),
-                                      width: 1.5,
-                                    ),
-                                  ),
-                                  child: Column(
-                                    crossAxisAlignment: CrossAxisAlignment.start,
-                                    children: [
-                                      Row(
-                                        children: [
-                                          Icon(
-                                            Icons.image_outlined,
-                                            size: 16,
-                                            color: !_animatedStickerPack
-                                                ? const Color(0xFF25D366)
-                                                : (isDark ? Colors.grey[400] : Colors.grey[600]),
-                                          ),
-                                          const SizedBox(width: 6),
-                                          Text(
-                                            'Statis',
-                                            style: GoogleFonts.plusJakartaSans(
-                                              fontWeight: FontWeight.bold,
-                                              fontSize: 13,
-                                              color: !_animatedStickerPack
-                                                  ? const Color(0xFF25D366)
-                                                  : (isDark ? Colors.white : Colors.black87),
-                                            ),
-                                          ),
-                                        ],
-                                      ),
-                                      const SizedBox(height: 4),
-                                      Text(
-                                        'Standar WA (< 100 KB)',
-                                        style: GoogleFonts.plusJakartaSans(
-                                          fontSize: 11,
-                                          color: isDark ? Colors.grey[400] : Colors.grey[600],
-                                        ),
-                                      ),
-                                    ],
-                                  ),
+                              child: _buildPackTypeOption(
+                                optionKey: const Key('pack_type_static'),
+                                isSelected: _selectedType == _PackMediaType.staticImage,
+                                icon: Icons.image_outlined,
+                                title: 'Statis',
+                                subtitle: 'Gambar (< 100 KB)',
+                                accentColor: const Color(0xFF25D366),
+                                isDark: isDark,
+                                onTap: () => setState(
+                                  () => _selectedType = _PackMediaType.staticImage,
                                 ),
                               ),
                             ),
-                            const SizedBox(width: 10),
+                            const SizedBox(width: 8),
                             Expanded(
-                              child: InkWell(
-                                onTap: () => setState(() => _animatedStickerPack = true),
-                                borderRadius: BorderRadius.circular(16),
-                                child: Container(
-                                  padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 12),
-                                  decoration: BoxDecoration(
-                                    color: _animatedStickerPack
-                                        ? const Color(0xFF25D366).withAlpha(isDark ? 50 : 25)
-                                        : (isDark ? Colors.white.withAlpha(10) : Colors.black.withAlpha(5)),
-                                    borderRadius: BorderRadius.circular(16),
-                                    border: Border.all(
-                                      color: _animatedStickerPack
-                                          ? const Color(0xFF25D366)
-                                          : (isDark ? Colors.white12 : Colors.black12),
-                                      width: 1.5,
-                                    ),
-                                  ),
-                                  child: Column(
-                                    crossAxisAlignment: CrossAxisAlignment.start,
-                                    children: [
-                                      Row(
-                                        children: [
-                                          Icon(
-                                            Icons.motion_photos_on_outlined,
-                                            size: 16,
-                                            color: _animatedStickerPack
-                                                ? const Color(0xFF25D366)
-                                                : (isDark ? Colors.grey[400] : Colors.grey[600]),
-                                          ),
-                                          const SizedBox(width: 6),
-                                          Text(
-                                            'Animasi',
-                                            style: GoogleFonts.plusJakartaSans(
-                                              fontWeight: FontWeight.bold,
-                                              fontSize: 13,
-                                              color: _animatedStickerPack
-                                                  ? const Color(0xFF25D366)
-                                                  : (isDark ? Colors.white : Colors.black87),
-                                            ),
-                                          ),
-                                        ],
-                                      ),
-                                      const SizedBox(height: 4),
-                                      Text(
-                                        'Format .gif (< 500 KB)',
-                                        style: GoogleFonts.plusJakartaSans(
-                                          fontSize: 11,
-                                          color: isDark ? Colors.grey[400] : Colors.grey[600],
-                                        ),
-                                      ),
-                                    ],
-                                  ),
+                              child: _buildPackTypeOption(
+                                optionKey: const Key('pack_type_gif'),
+                                isSelected: _selectedType == _PackMediaType.animatedGif,
+                                icon: Icons.motion_photos_on_outlined,
+                                title: 'Animasi',
+                                subtitle: 'Format .gif (< 500 KB)',
+                                accentColor: const Color(0xFF00A884),
+                                isDark: isDark,
+                                onTap: () => setState(
+                                  () => _selectedType = _PackMediaType.animatedGif,
+                                ),
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: _buildPackTypeOption(
+                                optionKey: const Key('pack_type_video_audio'),
+                                isSelected: _selectedType == _PackMediaType.videoAudio,
+                                icon: Icons.volume_up_rounded,
+                                title: 'Video Audio',
+                                subtitle: 'MP4 + Suara (≤ 10s)',
+                                accentColor: const Color(0xFFF09A06),
+                                isDark: isDark,
+                                onTap: () => setState(
+                                  () => _selectedType = _PackMediaType.videoAudio,
                                 ),
                               ),
                             ),
                           ],
                         ),
+                        if (_selectedType == _PackMediaType.videoAudio) ...[
+                          const SizedBox(height: 8),
+                          Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                            decoration: BoxDecoration(
+                              color: const Color(0xFFF09A06).withAlpha(isDark ? 28 : 20),
+                              borderRadius: BorderRadius.circular(12),
+                              border: Border.all(
+                                color: const Color(0xFFF09A06).withAlpha(90),
+                              ),
+                            ),
+                            child: Row(
+                              children: [
+                                const Icon(
+                                  Icons.graphic_eq_rounded,
+                                  size: 16,
+                                  color: Color(0xFFF09A06),
+                                ),
+                                const SizedBox(width: 8),
+                                Expanded(
+                                  child: Text(
+                                    'Mendukung video .mp4 dsb. maks 10 detik yang memiliki suara. Ketuk ikon speaker pada stiker untuk memutar audio.',
+                                    style: GoogleFonts.plusJakartaSans(
+                                      fontSize: 11,
+                                      height: 1.35,
+                                      color: isDark ? Colors.white70 : Colors.black87,
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ],
 
                         const SizedBox(height: 28),
 
@@ -439,6 +410,79 @@ class _CreatePackDialogState extends State<CreatePackDialog> {
               ),
             ),
           ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildPackTypeOption({
+    required Key optionKey,
+    required bool isSelected,
+    required IconData icon,
+    required String title,
+    required String subtitle,
+    required Color accentColor,
+    required bool isDark,
+    required VoidCallback onTap,
+  }) {
+    return InkWell(
+      key: optionKey,
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(14),
+      child: Container(
+        padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 8),
+        decoration: BoxDecoration(
+          color: isSelected
+              ? accentColor.withAlpha(isDark ? 48 : 25)
+              : (isDark ? Colors.white.withAlpha(10) : Colors.black.withAlpha(5)),
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(
+            color: isSelected
+                ? accentColor
+                : (isDark ? Colors.white12 : Colors.black12),
+            width: 1.5,
+          ),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Icon(
+                  icon,
+                  size: 15,
+                  color: isSelected
+                      ? accentColor
+                      : (isDark ? Colors.grey[400] : Colors.grey[600]),
+                ),
+                const SizedBox(width: 4),
+                Expanded(
+                  child: Text(
+                    title,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: GoogleFonts.plusJakartaSans(
+                      fontWeight: FontWeight.bold,
+                      fontSize: 12,
+                      color: isSelected
+                          ? accentColor
+                          : (isDark ? Colors.white : Colors.black87),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 4),
+            Text(
+              subtitle,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: GoogleFonts.plusJakartaSans(
+                fontSize: 10,
+                color: isDark ? Colors.grey[400] : Colors.grey[600],
+              ),
+            ),
+          ],
         ),
       ),
     );

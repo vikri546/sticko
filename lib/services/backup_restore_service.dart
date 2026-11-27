@@ -225,6 +225,26 @@ class BackupRestoreService {
             ),
           );
         }
+
+        if (sticker.hasAudio) {
+          final audioPath = manager.getAudioFilePath(
+                pack.identifier,
+                sticker.audioFileName,
+              ) ??
+              (customStickersDir != null
+                  ? '$customStickersDir/${pack.identifier}/${sticker.audioFileName}'
+                  : null);
+          if (audioPath != null && File(audioPath).existsSync()) {
+            final audioBytes = File(audioPath).readAsBytesSync();
+            archive.addFile(
+              ArchiveFile(
+                '${pack.identifier}/${sticker.audioFileName}',
+                audioBytes.length,
+                audioBytes,
+              ),
+            );
+          }
+        }
       }
     }
 

@@ -320,9 +320,10 @@ void main() {
       expect(AppUpdateService.isDirectApkUrl(data['apk_url'].toString()), isTrue);
       final changelog = AppUpdateService.parseChangelog(data);
       expect(changelog, isNotEmpty);
-      expect(changelog.any((e) => e.toLowerCase().contains('stiker-kucing-1')), isTrue);
-      expect(changelog.any((e) => e.toLowerCase().contains('.gif')), isTrue);
-      expect(changelog.any((e) => e.toLowerCase().contains('preview')), isTrue);
+      expect(changelog, equals(AppUpdateService.defaultChangelog));
+      expect(changelog.any((e) => e.toLowerCase().contains('stiker video audio')), isTrue);
+      expect(changelog.any((e) => e.toLowerCase().contains('chatbot')), isTrue);
+      expect(changelog.any((e) => e.toLowerCase().contains('crop')), isTrue);
       expect(changelog.any((e) => e.toLowerCase().contains('perbaikan')), isTrue);
     });
 

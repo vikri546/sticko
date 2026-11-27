@@ -133,7 +133,7 @@ class WhatsAppStickerValidator {
           errors.add(
             'Dimensi stiker #${i + 1} harus tepat 512x512 piksel (ditemukan: ${image.width}x${image.height}).',
           );
-        } else if (pack.animatedStickerPack) {
+        } else if (pack.animatedStickerPack || pack.videoAudioStickerPack) {
           int totalDurationMs = 0;
           for (final f in image.frames) {
             totalDurationMs += f.frameDuration;
@@ -146,6 +146,26 @@ class WhatsAppStickerValidator {
         }
       } catch (e) {
         errors.add('Gagal memeriksa stiker #${i + 1}: $e');
+      }
+
+      if (pack.videoAudioStickerPack) {
+        if (!sticker.hasAudio) {
+          errors.add(
+            'Stiker #${i + 1} pada paket Video Audio wajib memiliki berkas suara (audio).',
+          );
+        } else {
+          final audioFile = File('$packDir/${sticker.audioFileName}');
+          if (!audioFile.existsSync()) {
+            errors.add(
+              'Berkas audio stiker #${i + 1} (${sticker.audioFileName}) tidak ditemukan di penyimpanan.',
+            );
+          }
+          if (sticker.durationMs != null && sticker.durationMs! > 10000) {
+            errors.add(
+              'Durasi audio stiker #${i + 1} melebihi batas maksimal 10 detik.',
+            );
+          }
+        }
       }
     }
 

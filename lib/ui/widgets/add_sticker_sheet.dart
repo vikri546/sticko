@@ -7,10 +7,12 @@ import 'package:flutter/rendering.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:sticker_flutter/services/app_permission_service.dart';
+import 'package:sticker_flutter/services/audio_sticker_bot_service.dart';
 import 'package:sticker_flutter/services/sticker_image_processor.dart';
 import 'package:sticker_flutter/services/sticker_pack_manager.dart';
 import 'package:sticker_flutter/services/whatsapp_stickers_service.dart';
 import 'package:sticker_flutter/ui/widgets/app_notification.dart';
+import 'package:sticker_flutter/ui/widgets/audio_bot_bridge_sheet.dart';
 
 enum _CropMode {
   fit,    // Kotak 1:1, seluruh gambar masuk kanvas
@@ -51,15 +53,22 @@ class _AddStickerSheetState extends State<AddStickerSheet> {
   int _quarterTurns = 0;
   bool _isFlipped = false;
   double _currentScale = 1.0;
+  double _contentAutoFillScale = 1.0;
   bool _showTextEditor = false;
   bool _hasBlackStroke = true;
 
   Uint8List? _selectedImageBytes;
   bool _isAnimatedSticker = false;
+  String? _pendingAudioFilePath;
+  bool _hasNewPickedAudio = false;
+  int? _pendingDurationMs;
   String? _processingMessage;
+  Directory? _tempVideoWorkDir;
 
   // Multi-selection (group) mode
   final List<Uint8List> _multiSelectedBytes = [];
+  final List<String?> _multiSelectedAudioPaths = [];
+  final List<int?> _multiSelectedDurationsMs = [];
   int _processingCurrent = 0;
   int _processingTotal = 0;
 
@@ -94,16 +103,36 @@ class _AddStickerSheetState extends State<AddStickerSheet> {
           StickerImageProcessor.isAnimatedMedia(_selectedImageBytes!);
     }
 
-    if (widget.editingSticker != null &&
-        widget.editingSticker!.emojis.isNotEmpty) {
-      _selectedEmojis
-        ..clear()
-        ..addAll(widget.editingSticker!.emojis.take(3));
+    if (widget.editingSticker != null) {
+      if (widget.editingSticker!.emojis.isNotEmpty) {
+        _selectedEmojis
+          ..clear()
+          ..addAll(widget.editingSticker!.emojis.take(3));
+      }
+      if (widget.editingSticker!.hasAudio) {
+        _pendingAudioFilePath = StickerPackManager().getAudioFilePath(
+          widget.packIdentifier,
+          widget.editingSticker!.audioFileName,
+        );
+        _pendingDurationMs = widget.editingSticker!.durationMs;
+        if (_selectedImageBytes != null) {
+          _contentAutoFillScale =
+              StickerImageProcessor.computeContentFillScale(_selectedImageBytes!);
+        }
+      }
     }
   }
 
   @override
   void dispose() {
+    WhatsAppStickersService.stopStickerAudio();
+    final tempDir = _tempVideoWorkDir;
+    _tempVideoWorkDir = null;
+    if (tempDir != null && tempDir.existsSync()) {
+      try {
+        tempDir.deleteSync(recursive: true);
+      } catch (_) {}
+    }
     _transformationController.removeListener(_onTransformationChanged);
     _transformationController.dispose();
     _topTextController.dispose();
@@ -121,9 +150,26 @@ class _AddStickerSheetState extends State<AddStickerSheet> {
   }
 
   void _onSliderZoomChanged(double newScale) {
+    final clampedScale = newScale.clamp(0.5, 3.5);
+    final oldMatrix = _transformationController.value;
+    final oldScale = oldMatrix.getMaxScaleOnAxis().clamp(0.25, 6.0);
+    final oldTx = oldMatrix.storage[12];
+    final oldTy = oldMatrix.storage[13];
+    const center = _canvasSize * 0.5;
+    // Keep the current visual center anchored while zooming in/out
+    final focusX = (center - oldTx) / oldScale;
+    final focusY = (center - oldTy) / oldScale;
+    final newTx = center - focusX * clampedScale;
+    final newTy = center - focusY * clampedScale;
+
     setState(() {
-      _currentScale = newScale;
-      _transformationController.value = Matrix4.diagonal3Values(newScale, newScale, 1.0);
+      _currentScale = clampedScale;
+      _transformationController.value = Matrix4.identity()
+        ..storage[0] = clampedScale
+        ..storage[5] = clampedScale
+        ..storage[10] = 1.0
+        ..storage[12] = newTx
+        ..storage[13] = newTy;
     });
   }
 
@@ -154,9 +200,211 @@ class _AddStickerSheetState extends State<AddStickerSheet> {
     return 30 - (pack?.stickers.length ?? 0);
   }
 
+  bool get _isPackVideoAudio {
+    final pack = StickerPackManager().getPack(widget.packIdentifier);
+    return pack?.videoAudioStickerPack ?? false;
+  }
+
   bool get _isPackAnimated {
     final pack = StickerPackManager().getPack(widget.packIdentifier);
-    return pack?.animatedStickerPack ?? false;
+    return (pack?.animatedStickerPack ?? false) && !(pack?.videoAudioStickerPack ?? false);
+  }
+
+  bool get _isPackAnyAnimated => _isPackAnimated || _isPackVideoAudio;
+
+  Future<Directory> _ensureTempVideoWorkDir() async {
+    if (_tempVideoWorkDir != null && _tempVideoWorkDir!.existsSync()) {
+      return _tempVideoWorkDir!;
+    }
+    final dir = await Directory.systemTemp.createTemp('sticko_video_audio_');
+    _tempVideoWorkDir = dir;
+    return dir;
+  }
+
+  Future<({
+    List<ProcessedVideoAudioStickerResult> results,
+    int noAudioCount,
+    int tooLongCount,
+    int invalidCount,
+    String? firstSpecificError,
+  })> _processPickedVideoFiles(List<PlatformFile> files) async {
+    final results = <ProcessedVideoAudioStickerResult>[];
+    int noAudioCount = 0;
+    int tooLongCount = 0;
+    int invalidCount = 0;
+    String? firstSpecificError;
+
+    final workDir = await _ensureTempVideoWorkDir();
+
+    for (int i = 0; i < files.length; i++) {
+      final file = files[i];
+      String? resolvedPath = file.path;
+      File? fallbackInputFile;
+
+      try {
+        if (resolvedPath == null || resolvedPath.isEmpty || !File(resolvedPath).existsSync()) {
+          final rawBytes = await file.readAsBytes();
+          if (rawBytes.isEmpty) {
+            invalidCount++;
+            continue;
+          }
+          final ext = file.name.contains('.') ? file.name.split('.').last : 'mp4';
+          fallbackInputFile = File('${workDir.path}/input_${DateTime.now().microsecondsSinceEpoch}_$i.$ext');
+          await fallbackInputFile.writeAsBytes(rawBytes, flush: true);
+          resolvedPath = fallbackInputFile.path;
+        }
+
+        final processed = await StickerImageProcessor.processVideoToStickerWithAudio(
+          videoPath: resolvedPath,
+          tempOutputDirPath: workDir.path,
+          maxDurationMs: 10000,
+        );
+        results.add(processed);
+      } on VideoNoAudioException catch (e) {
+        noAudioCount++;
+        firstSpecificError ??= e.message;
+      } on VideoDurationExceededException catch (e) {
+        tooLongCount++;
+        firstSpecificError ??= e.message;
+      } catch (e) {
+        invalidCount++;
+        firstSpecificError ??= e.toString().replaceFirst('Exception: ', '');
+      } finally {
+        if (fallbackInputFile != null && fallbackInputFile.existsSync()) {
+          try {
+            fallbackInputFile.deleteSync();
+          } catch (_) {}
+        }
+      }
+    }
+
+    return (
+      results: results,
+      noAudioCount: noAudioCount,
+      tooLongCount: tooLongCount,
+      invalidCount: invalidCount,
+      firstSpecificError: firstSpecificError,
+    );
+  }
+
+  String _buildInvalidVideoMessage({
+    required int noAudioCount,
+    required int tooLongCount,
+    required int invalidCount,
+    String? firstSpecificError,
+  }) {
+    if (noAudioCount > 0 && tooLongCount == 0 && invalidCount == 0) {
+      return firstSpecificError ??
+          'Video yang dipilih tidak memiliki suara (audio). Pilih video (.mp4 dsb.) yang memiliki suara.';
+    }
+    if (tooLongCount > 0 && noAudioCount == 0 && invalidCount == 0) {
+      return firstSpecificError ??
+          'Durasi video melebihi batas maksimal 10 detik. Pilih video berdurasi maksimal 10 detik.';
+    }
+    return firstSpecificError ??
+        'Gagal memproses video. Pilih berkas video (.mp4, .mov, .webm, dsb.) maksimal 10 detik yang memiliki suara.';
+  }
+
+  /// Pick video files (`.mp4` and similar, `<= 10s`, with audio) and convert to animated WebP + audio.
+  Future<void> _pickVideoAudioMedia() async {
+    final availableSlots = _remainingSlots;
+    if (availableSlots <= 0) {
+      AppNotification.show(
+        context,
+        message: 'Paket stiker sudah mencapai batas maksimal 30 stiker.',
+        isSuccess: false,
+      );
+      return;
+    }
+
+    try {
+      await WhatsAppStickersService.stopStickerAudio();
+      final files = await StickerImageProcessor.pickMultipleVideoFiles(
+        limit: availableSlots,
+      );
+      if (files.isEmpty || !mounted) return;
+
+      setState(() {
+        _isProcessing = true;
+        _processingMessage = files.length == 1
+            ? 'Memproses video & mengekstrak suara (maks 10 detik)...'
+            : 'Memproses ${files.length} berkas video bersuara...';
+      });
+
+      final batch = await _processPickedVideoFiles(files);
+      if (!mounted) return;
+
+      if (batch.results.isEmpty) {
+        AppNotification.show(
+          context,
+          message: _buildInvalidVideoMessage(
+            noAudioCount: batch.noAudioCount,
+            tooLongCount: batch.tooLongCount,
+            invalidCount: batch.invalidCount,
+            firstSpecificError: batch.firstSpecificError,
+          ),
+          isSuccess: false,
+        );
+        return;
+      }
+
+      final skipped = batch.noAudioCount + batch.tooLongCount + batch.invalidCount;
+      setState(() {
+        if (batch.results.length == 1 && files.length == 1) {
+          final item = batch.results.first;
+          _resetEditState();
+          _selectedImageBytes = item.webpBytes;
+          _contentAutoFillScale =
+              StickerImageProcessor.computeContentFillScale(item.webpBytes);
+          _isAnimatedSticker = true;
+          _pendingAudioFilePath = item.tempAudioFilePath;
+          _hasNewPickedAudio = true;
+          _pendingDurationMs = item.durationMs;
+          _multiSelectedBytes.clear();
+          _multiSelectedAudioPaths.clear();
+          _multiSelectedDurationsMs.clear();
+        } else {
+          _multiSelectedBytes
+            ..clear()
+            ..addAll(batch.results.map((r) => r.webpBytes));
+          _multiSelectedAudioPaths
+            ..clear()
+            ..addAll(batch.results.map((r) => r.tempAudioFilePath));
+          _multiSelectedDurationsMs
+            ..clear()
+            ..addAll(batch.results.map((r) => r.durationMs));
+          _selectedImageBytes = null;
+          _pendingAudioFilePath = null;
+          _hasNewPickedAudio = false;
+          _pendingDurationMs = null;
+          _isAnimatedSticker = true;
+        }
+      });
+
+      if (skipped > 0) {
+        AppNotification.show(
+          context,
+          message:
+              '$skipped video dilewati karena durasi > 10 detik atau tidak memiliki suara.',
+          isSuccess: false,
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        AppNotification.show(
+          context,
+          message: 'Gagal memproses video bersuara: $e',
+          isSuccess: false,
+        );
+      }
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isProcessing = false;
+          _processingMessage = null;
+        });
+      }
+    }
   }
 
   Future<void> _pickFromGallery() async {
@@ -170,6 +418,11 @@ class _AddStickerSheetState extends State<AddStickerSheet> {
         message: 'Paket stiker sudah mencapai batas maksimal 30 stiker.',
         isSuccess: false,
       );
+      return;
+    }
+
+    if (_isPackVideoAudio) {
+      await _pickVideoAudioMedia();
       return;
     }
 
@@ -374,6 +627,72 @@ class _AddStickerSheetState extends State<AddStickerSheet> {
       return;
     }
 
+    if (_isPackVideoAudio) {
+      try {
+        final files = await StickerImageProcessor.pickMultipleVideoFiles(
+          limit: availableSlots,
+        );
+        if (files.isEmpty || !mounted) return;
+
+        setState(() {
+          _isProcessing = true;
+          _processingMessage = 'Memproses video bersuara tambahan...';
+        });
+
+        final batch = await _processPickedVideoFiles(files);
+        if (!mounted) return;
+
+        if (batch.results.isEmpty) {
+          AppNotification.show(
+            context,
+            message: _buildInvalidVideoMessage(
+              noAudioCount: batch.noAudioCount,
+              tooLongCount: batch.tooLongCount,
+              invalidCount: batch.invalidCount,
+              firstSpecificError: batch.firstSpecificError,
+            ),
+            isSuccess: false,
+          );
+          return;
+        }
+
+        setState(() {
+          _multiSelectedBytes.addAll(batch.results.map((r) => r.webpBytes));
+          _multiSelectedAudioPaths
+              .addAll(batch.results.map((r) => r.tempAudioFilePath));
+          _multiSelectedDurationsMs
+              .addAll(batch.results.map((r) => r.durationMs));
+        });
+
+        final skipped =
+            batch.noAudioCount + batch.tooLongCount + batch.invalidCount;
+        if (skipped > 0) {
+          AppNotification.show(
+            context,
+            message:
+                '$skipped video dilewati karena durasi > 10 detik atau tidak memiliki suara.',
+            isSuccess: false,
+          );
+        }
+      } catch (e) {
+        if (mounted) {
+          AppNotification.show(
+            context,
+            message: 'Gagal menambah video bersuara: $e',
+            isSuccess: false,
+          );
+        }
+      } finally {
+        if (mounted) {
+          setState(() {
+            _isProcessing = false;
+            _processingMessage = null;
+          });
+        }
+      }
+      return;
+    }
+
     if (_isPackAnimated) {
       try {
         final files = await StickerImageProcessor.pickMultipleGifFiles(
@@ -502,6 +821,12 @@ class _AddStickerSheetState extends State<AddStickerSheet> {
     if (index >= 0 && index < _multiSelectedBytes.length) {
       setState(() {
         _multiSelectedBytes.removeAt(index);
+        if (index < _multiSelectedAudioPaths.length) {
+          _multiSelectedAudioPaths.removeAt(index);
+        }
+        if (index < _multiSelectedDurationsMs.length) {
+          _multiSelectedDurationsMs.removeAt(index);
+        }
       });
     }
   }
@@ -531,9 +856,31 @@ class _AddStickerSheetState extends State<AddStickerSheet> {
       _topTextController.text.trim().isNotEmpty ||
       _bottomTextController.text.trim().isNotEmpty;
 
+  bool get _isAudioStickerMode =>
+      _pendingAudioFilePath != null ||
+      (widget.editingSticker?.hasAudio ?? false);
+
   Future<Uint8List?> _renderEditedStickerBytes() async {
     if (_selectedImageBytes == null) return null;
-    if (_isAnimatedSticker || !_hasUserEdits) return _selectedImageBytes;
+    if (!_hasUserEdits) return _selectedImageBytes;
+
+    if (_isAnimatedSticker) {
+      if (!_isAudioStickerMode) return _selectedImageBytes;
+      final matrix = _transformationController.value;
+      final scale = matrix.getMaxScaleOnAxis().clamp(0.5, 3.5);
+      final tx = matrix.storage[12];
+      final ty = matrix.storage[13];
+      final baseScale = _cropMode == _CropMode.fit ? 1.0 : _contentAutoFillScale;
+      return StickerImageProcessor.transformAnimatedStickerWebp(
+        webpBytes: _selectedImageBytes!,
+        userScale: scale,
+        panX: tx,
+        panY: ty,
+        canvasSize: _canvasSize,
+        modeBaseScale: baseScale,
+        circleMask: _cropMode == _CropMode.circle,
+      );
+    }
 
     try {
       final boundary = _previewKey.currentContext?.findRenderObject() as RenderRepaintBoundary?;
@@ -556,6 +903,7 @@ class _AddStickerSheetState extends State<AddStickerSheet> {
 
     setState(() => _isProcessing = true);
     try {
+      await WhatsAppStickersService.stopStickerAudio();
       final imageBytesToSave = await _renderEditedStickerBytes() ?? _selectedImageBytes!;
       if (_isEditingExisting) {
         await StickerPackManager().replaceStickerInPack(
@@ -563,6 +911,8 @@ class _AddStickerSheetState extends State<AddStickerSheet> {
           oldFileName: widget.editingSticker!.imageFileName,
           newImageBytes: imageBytesToSave,
           newEmojis: List<String>.from(_selectedEmojis),
+          newSourceAudioFilePath: _hasNewPickedAudio ? _pendingAudioFilePath : null,
+          newDurationMs: _pendingDurationMs,
         );
 
         if (mounted) {
@@ -578,6 +928,8 @@ class _AddStickerSheetState extends State<AddStickerSheet> {
           packIdentifier: widget.packIdentifier,
           imageBytes: imageBytesToSave,
           emojis: _selectedEmojis,
+          sourceAudioFilePath: _pendingAudioFilePath,
+          durationMs: _pendingDurationMs,
         );
 
         if (mounted) {
@@ -641,9 +993,13 @@ class _AddStickerSheetState extends State<AddStickerSheet> {
         : (_selectedImageBytes?.lengthInBytes ?? 0);
     final sizeKb = (byteSize / 1024).toStringAsFixed(2);
 
+    final hasAudioSticker =
+        (sticker?.hasAudio ?? false) || _pendingAudioFilePath != null;
     final bytes = _selectedImageBytes;
-    String formatLabel = 'WEBP (${_isAnimatedSticker ? "Animasi" : "Statis"} • 512 × 512 px)';
-    if (bytes != null) {
+    String formatLabel = hasAudioSticker
+        ? 'WEBP + Audio (Video Bersuara • 512 × 512 px)'
+        : 'WEBP (${_isAnimatedSticker ? "Animasi" : "Statis"} • 512 × 512 px)';
+    if (!hasAudioSticker && bytes != null) {
       if (StickerImageProcessor.isWebpFormat(bytes)) {
         formatLabel =
             'WEBP (${StickerImageProcessor.isAnimatedWebp(bytes) ? "Animasi" : "Statis"} • 512 × 512 px)';
@@ -773,10 +1129,15 @@ class _AddStickerSheetState extends State<AddStickerSheet> {
     });
 
     try {
+      await WhatsAppStickersService.stopStickerAudio();
       await StickerPackManager().addMultipleStickersToPack(
         packIdentifier: widget.packIdentifier,
         imagesBytesList: _multiSelectedBytes,
         defaultEmojis: _selectedEmojis,
+        sourceAudioFilePaths:
+            _multiSelectedAudioPaths.isNotEmpty ? _multiSelectedAudioPaths : null,
+        durationsMs:
+            _multiSelectedDurationsMs.isNotEmpty ? _multiSelectedDurationsMs : null,
         onProgress: (current, totalCount) {
           if (mounted) {
             setState(() {
@@ -845,30 +1206,44 @@ class _AddStickerSheetState extends State<AddStickerSheet> {
             // Sheet Title
             Text(
               _multiSelectedBytes.isNotEmpty
-                  ? 'Grup Stiker (${_multiSelectedBytes.length} ${_isPackAnimated ? "Animasi GIF" : "Foto"})'
+                  ? 'Grup Stiker (${_multiSelectedBytes.length} ${_isPackVideoAudio ? "Video Audio" : (_isPackAnimated ? "Animasi GIF" : "Foto")})'
                   : (_isEditingExisting
-                      ? (_isAnimatedSticker ? 'Edit Stiker Animasi' : 'Edit Stiker')
+                      ? (_pendingAudioFilePath != null
+                          ? 'Edit Stiker Video Audio'
+                          : (_isAnimatedSticker ? 'Edit Stiker Animasi' : 'Edit Stiker'))
                       : (_selectedImageBytes != null
-                          ? (_isAnimatedSticker ? 'Pratinjau Stiker Animasi' : 'Pratinjau Stiker')
-                          : (_isPackAnimated ? 'Tambah Stiker GIF (Maks 10s)' : 'Tambah Stiker Baru'))),
+                          ? (_pendingAudioFilePath != null
+                              ? 'Pratinjau Stiker Video Audio'
+                              : (_isAnimatedSticker ? 'Pratinjau Stiker Animasi' : 'Pratinjau Stiker'))
+                          : (_isPackVideoAudio
+                              ? 'Tambah Stiker Video Audio (Maks 10s)'
+                              : (_isPackAnimated
+                                  ? 'Tambah Stiker GIF (Maks 10s)'
+                                  : 'Tambah Stiker Baru')))),
               style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
               textAlign: TextAlign.center,
             ),
             const SizedBox(height: 6),
             Text(
               _multiSelectedBytes.isNotEmpty
-                  ? (_isPackAnimated
-                      ? 'Animasi GIF ini akan diproses otomatis ke format WebP sesuai standar WhatsApp (< 500 KB).'
-                      : 'Foto-foto ini akan diproses otomatis ke format WebP sesuai standar WhatsApp (< 100 KB).')
+                  ? (_isPackVideoAudio
+                      ? 'Video bersuara ini telah dikonversi ke stiker bergerak (< 500 KB) beserta trek suaranya (maks 10 detik).'
+                      : (_isPackAnimated
+                          ? 'Animasi GIF ini akan diproses otomatis ke format WebP sesuai standar WhatsApp (< 500 KB).'
+                          : 'Foto-foto ini akan diproses otomatis ke format WebP sesuai standar WhatsApp (< 100 KB).'))
                   : (_isEditingExisting
                       ? 'Sesuaikan gambar, teks, atau emoji stiker ini lalu simpan perubahan.'
                       : (_selectedImageBytes != null
-                          ? (_isAnimatedSticker
-                              ? 'Stiker animasi dari berkas .gif (maks 10 detik, < 500 KB). Pilih emoji lalu simpan.'
-                              : 'Sesuaikan emoji untuk stiker ini sebelum disimpan ke koleksi.')
-                          : (_isPackAnimated
-                              ? 'Pilih berkas animasi .gif saja (maks 10 detik) untuk dijadikan stiker bergerak WhatsApp.'
-                              : 'Pilih foto dari galeri atau ambil foto baru dengan kamera untuk dijadikan stiker WhatsApp.'))),
+                          ? (_pendingAudioFilePath != null
+                              ? 'Stiker video bersuara siap disimpan (maks 10 detik). Ketuk tombol suara untuk mendengarkan audio.'
+                              : (_isAnimatedSticker
+                                  ? 'Stiker animasi dari berkas .gif (maks 10 detik, < 500 KB). Pilih emoji lalu simpan.'
+                                  : 'Sesuaikan emoji untuk stiker ini sebelum disimpan ke koleksi.'))
+                          : (_isPackVideoAudio
+                              ? 'Pilih berkas video (.mp4, .mov, .webm, dsb.) maksimal 10 detik yang memiliki suara.'
+                              : (_isPackAnimated
+                                  ? 'Pilih berkas animasi .gif saja (maks 10 detik) untuk dijadikan stiker bergerak WhatsApp.'
+                                  : 'Pilih foto dari galeri atau ambil foto baru dengan kamera untuk dijadikan stiker WhatsApp.')))),
               style: const TextStyle(color: Colors.grey, fontSize: 13),
               textAlign: TextAlign.center,
             ),
@@ -896,9 +1271,11 @@ class _AddStickerSheetState extends State<AddStickerSheet> {
                     ),
                     const SizedBox(height: 8),
                     Text(
-                      _isPackAnimated
-                          ? 'Sedang mengoptimalkan animasi .gif agar memenuhi standar WhatsApp (durasi maks 10s, WebP 512x512, ukuran < 500 KB).'
-                          : 'Sedang mengoptimalkan stiker agar memenuhi standar WhatsApp (WebP 512x512, ukuran < 100 KB).',
+                      _isPackVideoAudio
+                          ? 'Sedang mengekstrak animasi & trek audio video (durasi maks 10s, WebP 512x512, ukuran < 500 KB).'
+                          : (_isPackAnimated
+                              ? 'Sedang mengoptimalkan animasi .gif agar memenuhi standar WhatsApp (durasi maks 10s, WebP 512x512, ukuran < 500 KB).'
+                              : 'Sedang mengoptimalkan stiker agar memenuhi standar WhatsApp (WebP 512x512, ukuran < 100 KB).'),
                       style: const TextStyle(color: Colors.grey, fontSize: 12),
                       textAlign: TextAlign.center,
                     ),
@@ -908,7 +1285,17 @@ class _AddStickerSheetState extends State<AddStickerSheet> {
             ]
             // 1. Initial State: Picker Options
             else if (_selectedImageBytes == null && _multiSelectedBytes.isEmpty) ...[
-              if (_isPackAnimated) ...[
+              if (_isPackVideoAudio) ...[
+                // Panel Stiker Video Bersuara: HANYA 1 BUTTON khusus Video + Audio (<= 10s)
+                _PickerOptionCard(
+                  icon: Icons.video_library_rounded,
+                  label: 'Galeri Video Bersuara (.mp4)',
+                  subtitle: 'Video dengan audio suara (maks 10 detik)',
+                  color: const Color(0xFFF09A06),
+                  isHorizontal: true,
+                  onTap: _pickVideoAudioMedia,
+                ),
+              ] else if (_isPackAnimated) ...[
                 // Panel Stiker Animasi: HANYA 1 BUTTON khusus .gif
                 _PickerOptionCard(
                   icon: Icons.gif_box_rounded,
@@ -992,12 +1379,37 @@ class _AddStickerSheetState extends State<AddStickerSheet> {
                               child: Stack(
                                 fit: StackFit.expand,
                                 children: [
-                                  if (_isAnimatedSticker)
+                                  if (_isAnimatedSticker && !_isAudioStickerMode)
                                     RepaintBoundary(
                                       child: Image.memory(
                                         _selectedImageBytes!,
                                         fit: BoxFit.contain,
                                         gaplessPlayback: true,
+                                      ),
+                                    )
+                                  else if (_isAnimatedSticker && _isAudioStickerMode)
+                                    InteractiveViewer(
+                                      key: const Key('audio_sticker_interactive_viewer'),
+                                      transformationController: _transformationController,
+                                      minScale: 0.5,
+                                      maxScale: 3.5,
+                                      boundaryMargin: const EdgeInsets.all(160.0),
+                                      clipBehavior: Clip.none,
+                                      child: SizedBox(
+                                        width: _canvasSize,
+                                        height: _canvasSize,
+                                        child: Transform.scale(
+                                          scale: _cropMode == _CropMode.fit
+                                              ? 1.0
+                                              : _contentAutoFillScale,
+                                          child: RepaintBoundary(
+                                            child: Image.memory(
+                                              _selectedImageBytes!,
+                                              fit: BoxFit.contain,
+                                              gaplessPlayback: true,
+                                            ),
+                                          ),
+                                        ),
                                       ),
                                     )
                                   else
@@ -1052,17 +1464,28 @@ class _AddStickerSheetState extends State<AddStickerSheet> {
                         child: Container(
                           padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
                           decoration: BoxDecoration(
-                            color: const Color(0xFF00A884).withAlpha(220),
+                            color: (_pendingAudioFilePath != null
+                                    ? const Color(0xFFF09A06)
+                                    : const Color(0xFF00A884))
+                                .withAlpha(225),
                             borderRadius: BorderRadius.circular(6),
                           ),
-                          child: const Row(
+                          child: Row(
                             mainAxisSize: MainAxisSize.min,
                             children: [
-                              Icon(Icons.motion_photos_on_rounded, size: 12, color: Colors.white),
-                              SizedBox(width: 4),
+                              Icon(
+                                _pendingAudioFilePath != null
+                                    ? Icons.volume_up_rounded
+                                    : Icons.motion_photos_on_rounded,
+                                size: 12,
+                                color: Colors.white,
+                              ),
+                              const SizedBox(width: 4),
                               Text(
-                                'Animasi ≤10s',
-                                style: TextStyle(
+                                _pendingAudioFilePath != null
+                                    ? 'Video + Suara ≤10s'
+                                    : 'Animasi ≤10s',
+                                style: const TextStyle(
                                   color: Colors.white,
                                   fontSize: 10,
                                   fontWeight: FontWeight.bold,
@@ -1099,15 +1522,21 @@ class _AddStickerSheetState extends State<AddStickerSheet> {
                         shape: const CircleBorder(),
                         child: InkWell(
                           customBorder: const CircleBorder(),
-                          onTap: () => setState(() {
-                            if (_isEditingExisting) {
-                              _resetEditState();
-                            } else {
-                              _selectedImageBytes = null;
-                              _isAnimatedSticker = false;
-                              _resetEditState();
-                            }
-                          }),
+                          onTap: () {
+                            WhatsAppStickersService.stopStickerAudio();
+                            setState(() {
+                              if (_isEditingExisting) {
+                                _resetEditState();
+                              } else {
+                                _selectedImageBytes = null;
+                                _isAnimatedSticker = false;
+                                _pendingAudioFilePath = null;
+                                _hasNewPickedAudio = false;
+                                _pendingDurationMs = null;
+                                _resetEditState();
+                              }
+                            });
+                          },
                           child: const Padding(
                             padding: EdgeInsets.all(6.0),
                             child: Icon(Icons.refresh_rounded, color: Colors.white, size: 18),
@@ -1118,6 +1547,233 @@ class _AddStickerSheetState extends State<AddStickerSheet> {
                   ],
                 ),
               ),
+
+              // Tap-to-Play & Send-via-Bot Audio Controls for Video+Audio Stickers
+              if (_pendingAudioFilePath != null) ...[
+                const SizedBox(height: 12),
+                Wrap(
+                  alignment: WrapAlignment.center,
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: [
+                    ValueListenableBuilder<String?>(
+                      valueListenable: WhatsAppStickersService.activePlayingAudioPath,
+                      builder: (context, playingPath, _) {
+                        final isPlaying = playingPath == _pendingAudioFilePath;
+                        final durLabel = _pendingDurationMs != null
+                            ? ' (${(_pendingDurationMs! / 1000).toStringAsFixed(1)}s)'
+                            : '';
+                        return OutlinedButton.icon(
+                          key: const Key('preview_audio_toggle_button'),
+                          onPressed: () {
+                            WhatsAppStickersService.toggleStickerAudio(
+                              _pendingAudioFilePath!,
+                              maxDurationMs: _pendingDurationMs ?? 10000,
+                            );
+                          },
+                          style: OutlinedButton.styleFrom(
+                            foregroundColor: isPlaying
+                                ? const Color(0xFFF09A06)
+                                : const Color(0xFF25D366),
+                            side: BorderSide(
+                              color: isPlaying
+                                  ? const Color(0xFFF09A06)
+                                  : const Color(0xFF25D366),
+                              width: 1.4,
+                            ),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(20),
+                            ),
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 14,
+                              vertical: 10,
+                            ),
+                          ),
+                          icon: Icon(
+                            isPlaying
+                                ? Icons.stop_circle_rounded
+                                : Icons.volume_up_rounded,
+                            size: 18,
+                          ),
+                          label: Text(
+                            isPlaying
+                                ? 'Hentikan Suara$durLabel'
+                                : 'Putar Suara Stiker$durLabel',
+                            style: const TextStyle(
+                              fontWeight: FontWeight.bold,
+                              fontSize: 12.5,
+                            ),
+                          ),
+                        );
+                      },
+                    ),
+                    OutlinedButton.icon(
+                      key: const Key('preview_send_via_bot_button'),
+                      onPressed: _isProcessing
+                          ? null
+                          : () async {
+                              await WhatsAppStickersService.stopStickerAudio();
+                              final audioFile = File(_pendingAudioFilePath!);
+                              if (!audioFile.existsSync() ||
+                                  _selectedImageBytes == null) {
+                                return;
+                              }
+                              setState(() => _isProcessing = true);
+                              late final Uint8List renderedWebp;
+                              try {
+                                renderedWebp =
+                                    await _renderEditedStickerBytes() ??
+                                        _selectedImageBytes!;
+                              } finally {
+                                if (mounted) {
+                                  setState(() => _isProcessing = false);
+                                }
+                              }
+                              final dotIdx = _pendingAudioFilePath!.lastIndexOf('.');
+                              final ext = (dotIdx != -1 &&
+                                      dotIdx < _pendingAudioFilePath!.length - 1)
+                                  ? _pendingAudioFilePath!
+                                      .substring(dotIdx + 1)
+                                      .toLowerCase()
+                                  : 'm4a';
+                              final item = AudioStickerBridgeItem(
+                                webpBytes: renderedWebp,
+                                audioBytes: audioFile.readAsBytesSync(),
+                                audioExt: ext,
+                                durationMs: _pendingDurationMs ?? 5000,
+                                emojis: List<String>.from(_selectedEmojis),
+                              );
+                              final botService = AudioStickerBotService();
+                              await botService.loadConfig();
+                              if (!context.mounted) return;
+                              if (!botService.isConfigured) {
+                                await AudioBotBridgeSheet.show(
+                                  context,
+                                  title: 'Kirim Stiker Audio ke WA',
+                                  itemsToSend: [item],
+                                );
+                              } else {
+                                final res = await botService.sendItemsViaBridge(
+                                  items: [item],
+                                );
+                                if (!context.mounted) return;
+                                AppNotification.show(
+                                  context,
+                                  message: res.message,
+                                  isSuccess: res.success,
+                                );
+                              }
+                            },
+                      style: OutlinedButton.styleFrom(
+                        foregroundColor: const Color(0xFFF09A06),
+                        side: const BorderSide(
+                          color: Color(0xFFF09A06),
+                          width: 1.4,
+                        ),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(20),
+                        ),
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 14,
+                          vertical: 10,
+                        ),
+                      ),
+                      icon: const Icon(Icons.smart_toy_rounded, size: 18),
+                      label: const Text(
+                        'Kirim via Bot WA',
+                        style: TextStyle(
+                          fontWeight: FontWeight.bold,
+                          fontSize: 12.5,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+
+              // Crop & Zoom Controls for Audio Stickers
+              if (_isAnimatedSticker && _isAudioStickerMode) ...[
+                const SizedBox(height: 12),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 6),
+                  decoration: BoxDecoration(
+                    color: isDark ? const Color(0xFF1F2C34) : const Color(0xFFF0F2F5),
+                    borderRadius: BorderRadius.circular(16),
+                  ),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceAround,
+                    children: [
+                      Expanded(
+                        child: _ToolIconButton(
+                          icon: Icons.fit_screen_rounded,
+                          label: 'Fit',
+                          isActive: _cropMode == _CropMode.fit,
+                          onTap: () => setState(() => _cropMode = _CropMode.fit),
+                        ),
+                      ),
+                      Expanded(
+                        child: _ToolIconButton(
+                          icon: Icons.crop_free_rounded,
+                          label: 'Penuh',
+                          isActive: _cropMode == _CropMode.fill,
+                          onTap: () => setState(() => _cropMode = _CropMode.fill),
+                        ),
+                      ),
+                      Expanded(
+                        child: _ToolIconButton(
+                          icon: Icons.circle_outlined,
+                          label: 'Bulat',
+                          isActive: _cropMode == _CropMode.circle,
+                          onTap: () => setState(() => _cropMode = _CropMode.circle),
+                        ),
+                      ),
+                      Expanded(
+                        child: _ToolIconButton(
+                          icon: Icons.restart_alt_rounded,
+                          label: 'Reset',
+                          isActive: false,
+                          onTap: _resetTransform,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 8),
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 6),
+                  child: Row(
+                    children: [
+                      const Icon(Icons.zoom_out_rounded, size: 18, color: Colors.grey),
+                      Expanded(
+                        child: SliderTheme(
+                          data: SliderTheme.of(context).copyWith(
+                            trackHeight: 3,
+                            thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 6),
+                          ),
+                          child: Slider(
+                            key: const Key('audio_sticker_zoom_slider'),
+                            value: _currentScale,
+                            min: 0.5,
+                            max: 3.5,
+                            activeColor: const Color(0xFFF09A06),
+                            onChanged: _onSliderZoomChanged,
+                          ),
+                        ),
+                      ),
+                      const Icon(Icons.zoom_in_rounded, size: 18, color: Colors.grey),
+                      const SizedBox(width: 6),
+                      Text(
+                        '${(_currentScale * 100).toInt()}%',
+                        style: const TextStyle(
+                          fontSize: 11,
+                          color: Colors.grey,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
 
               // Editing Tools for Static Stickers
               if (!_isAnimatedSticker) ...[
@@ -1562,7 +2218,11 @@ class _AddStickerSheetState extends State<AddStickerSheet> {
                       TextButton(
                         onPressed: _isProcessing
                             ? null
-                            : () => setState(() => _multiSelectedBytes.clear()),
+                            : () => setState(() {
+                                  _multiSelectedBytes.clear();
+                                  _multiSelectedAudioPaths.clear();
+                                  _multiSelectedDurationsMs.clear();
+                                }),
                         child: const Text('Reset', style: TextStyle(color: Colors.redAccent)),
                       ),
                     ],
@@ -1604,12 +2264,29 @@ class _AddStickerSheetState extends State<AddStickerSheet> {
                                 bytes,
                                 fit: BoxFit.contain,
                                 gaplessPlayback: true,
-                                cacheWidth: _isPackAnimated ? null : 150,
-                                cacheHeight: _isPackAnimated ? null : 150,
+                                cacheWidth: _isPackAnyAnimated ? null : 150,
+                                cacheHeight: _isPackAnyAnimated ? null : 150,
                               ),
                             ),
                           ),
                         ),
+                        if (_isPackVideoAudio)
+                          Positioned(
+                            bottom: 3,
+                            right: 3,
+                            child: Container(
+                              padding: const EdgeInsets.all(3),
+                              decoration: BoxDecoration(
+                                color: const Color(0xFFF09A06).withAlpha(220),
+                                shape: BoxShape.circle,
+                              ),
+                              child: const Icon(
+                                Icons.volume_up_rounded,
+                                size: 11,
+                                color: Colors.white,
+                              ),
+                            ),
+                          ),
                         // Number badge
                         Positioned(
                           bottom: 3,
@@ -1683,7 +2360,7 @@ class _AddStickerSheetState extends State<AddStickerSheet> {
                 ),
                 const SizedBox(height: 8),
                 Text(
-                  'Mengompres & memproses stiker $_processingCurrent dari $_processingTotal (< ${_isPackAnimated ? 500 : 100} KB)...',
+                  'Mengompres & memproses stiker $_processingCurrent dari $_processingTotal (< ${_isPackAnyAnimated ? 500 : 100} KB)...',
                   style: const TextStyle(fontSize: 12, color: Colors.grey),
                   textAlign: TextAlign.center,
                 ),

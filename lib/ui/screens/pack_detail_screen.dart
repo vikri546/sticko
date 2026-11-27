@@ -1,10 +1,13 @@
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:sticker_flutter/config/developer_sticker_packs.dart';
+import 'package:sticker_flutter/services/audio_sticker_bot_service.dart';
 import 'package:sticker_flutter/services/sticker_pack_manager.dart';
 import 'package:sticker_flutter/services/whatsapp_stickers_service.dart';
 import 'package:sticker_flutter/ui/widgets/add_sticker_sheet.dart';
 import 'package:sticker_flutter/ui/widgets/app_notification.dart';
+import 'package:sticker_flutter/ui/widgets/audio_bot_bridge_sheet.dart';
 import 'package:sticker_flutter/ui/widgets/sticker_grid_tile.dart';
 
 /// Screen displaying the details of a sticker pack, its grid of stickers, and the WhatsApp export button.
@@ -28,9 +31,11 @@ class _PackDetailScreenState extends State<PackDetailScreen> {
   final ScrollController _gridScrollController = ScrollController();
   final GlobalKey _gridViewKey = GlobalKey();
   bool _isExporting = false;
+  bool _isSendingViaBot = false;
 
   @override
   void dispose() {
+    WhatsAppStickersService.stopStickerAudio();
     _gridScrollController.dispose();
     super.dispose();
   }
@@ -334,6 +339,10 @@ class _PackDetailScreenState extends State<PackDetailScreen> {
     required int stickerIndex,
     required String? filePath,
   }) {
+    final audioPath = _manager.getAudioFilePath(
+      pack.identifier,
+      sticker.audioFileName,
+    );
     return LayoutBuilder(
       builder: (context, constraints) {
         final tileSize = constraints.biggest;
@@ -372,6 +381,7 @@ class _PackDetailScreenState extends State<PackDetailScreen> {
                     child: StickerGridTile(
                       sticker: sticker,
                       filePath: filePath,
+                      audioFilePath: audioPath,
                       isDragTargetHighlighted: true,
                       showDeleteButton: false,
                       onDelete: () {},
@@ -384,6 +394,7 @@ class _PackDetailScreenState extends State<PackDetailScreen> {
                 child: StickerGridTile(
                   sticker: sticker,
                   filePath: filePath,
+                  audioFilePath: audioPath,
                   showDeleteButton: false,
                   onDelete: () {},
                 ),
@@ -394,6 +405,7 @@ class _PackDetailScreenState extends State<PackDetailScreen> {
                 child: StickerGridTile(
                   sticker: sticker,
                   filePath: filePath,
+                  audioFilePath: audioPath,
                   isDragTargetHighlighted: isTargetHovered,
                   showDeleteButton: !DeveloperStickerPacks.isProtectedPack(pack),
                   onTap: () => _openEditStickerSheet(pack, sticker, filePath),
@@ -492,7 +504,9 @@ class _PackDetailScreenState extends State<PackDetailScreen> {
                   borderRadius: BorderRadius.circular(8),
                 ),
                 child: Text(
-                  pack.animatedStickerPack ? 'Animasi (≤500KB)' : 'Statis (≤100KB)',
+                  pack.videoAudioStickerPack
+                      ? 'Video Audio (≤10s)'
+                      : (pack.animatedStickerPack ? 'Animasi (≤500KB)' : 'Statis (≤100KB)'),
                   style: TextStyle(
                     fontSize: 10,
                     fontWeight: FontWeight.w600,
@@ -567,6 +581,85 @@ class _PackDetailScreenState extends State<PackDetailScreen> {
     );
   }
 
+  List<AudioStickerBridgeItem> _collectAudioBridgeItems(StickerPack pack) {
+    final items = <AudioStickerBridgeItem>[];
+    for (final sticker in pack.stickers) {
+      if (!sticker.hasAudio) continue;
+      final webpPath =
+          _manager.getStickerFilePath(pack.identifier, sticker.imageFileName);
+      final audioPath =
+          _manager.getAudioFilePath(pack.identifier, sticker.audioFileName);
+      if (webpPath == null || audioPath == null) continue;
+      final webpFile = File(webpPath);
+      final audioFile = File(audioPath);
+      if (!webpFile.existsSync() || !audioFile.existsSync()) continue;
+
+      final dotIdx = audioPath.lastIndexOf('.');
+      final ext = (dotIdx != -1 && dotIdx < audioPath.length - 1)
+          ? audioPath.substring(dotIdx + 1).toLowerCase()
+          : 'm4a';
+
+      items.add(
+        AudioStickerBridgeItem(
+          webpBytes: webpFile.readAsBytesSync(),
+          audioBytes: audioFile.readAsBytesSync(),
+          audioExt: ext,
+          durationMs: sticker.durationMs ?? 5000,
+          emojis: sticker.emojis,
+        ),
+      );
+    }
+    return items;
+  }
+
+  Future<void> _sendPackViaAudioBot(StickerPack pack, {bool forceConfigSheet = false}) async {
+    await WhatsAppStickersService.stopStickerAudio();
+    final items = _collectAudioBridgeItems(pack);
+
+    if (forceConfigSheet) {
+      if (!mounted) return;
+      await AudioBotBridgeSheet.show(
+        context,
+        title: 'Pengaturan Chatbot Stiker Audio WA',
+        itemsToSend: items.isNotEmpty ? items : null,
+      );
+      return;
+    }
+
+    if (items.isEmpty) {
+      if (!mounted) return;
+      AppNotification.show(
+        context,
+        message: 'Tambahkan minimal 1 stiker video bersuara terlebih dahulu.',
+        isSuccess: false,
+      );
+      return;
+    }
+
+    final botService = AudioStickerBotService();
+    await botService.loadConfig();
+    if (!botService.isConfigured) {
+      if (!mounted) return;
+      await AudioBotBridgeSheet.show(
+        context,
+        title: 'Kirim "${pack.name}" via Chatbot WA',
+        itemsToSend: items,
+      );
+      return;
+    }
+
+    setState(() => _isSendingViaBot = true);
+    final res = await botService.sendItemsViaBridge(items: items);
+    if (!mounted) return;
+    setState(() => _isSendingViaBot = false);
+
+    AppNotification.show(
+      context,
+      message: res.message,
+      isSuccess: res.success,
+    );
+  }
+
   Widget _buildBottomActionBar(StickerPack pack, bool canAdd, bool isInstalled) {
     Color buttonColor;
     String buttonText;
@@ -600,34 +693,106 @@ class _PackDetailScreenState extends State<PackDetailScreen> {
       ),
       child: SafeArea(
         top: false,
-        child: SizedBox(
-          width: double.infinity,
-          height: 52,
-          child: ElevatedButton.icon(
-            style: ElevatedButton.styleFrom(
-              backgroundColor: buttonColor,
-              foregroundColor: Colors.white,
-              elevation: canAdd ? 2 : 0,
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
-            ),
-            onPressed: (!canAdd || _isExporting) ? null : () => _exportToWhatsApp(pack),
-            icon: _isExporting
-                ? const SizedBox(
-                    width: 20,
-                    height: 20,
-                    child: CircularProgressIndicator(
-                      strokeWidth: 2.2,
-                      color: Colors.white,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (pack.videoAudioStickerPack) ...[
+              Row(
+                children: [
+                  Expanded(
+                    child: SizedBox(
+                      height: 48,
+                      child: ElevatedButton.icon(
+                        key: const Key('send_pack_via_audio_bot_button'),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: const Color(0xFFF09A06),
+                          foregroundColor: Colors.black,
+                          elevation: 1,
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(14),
+                          ),
+                        ),
+                        onPressed: (_isSendingViaBot || _isExporting)
+                            ? null
+                            : () => _sendPackViaAudioBot(pack),
+                        icon: _isSendingViaBot
+                            ? const SizedBox(
+                                width: 18,
+                                height: 18,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2.2,
+                                  color: Colors.black,
+                                ),
+                              )
+                            : const Icon(Icons.smart_toy_rounded, size: 20),
+                        label: Text(
+                          _isSendingViaBot
+                              ? 'Mengirim ke Bot WA...'
+                              : 'Kirim Stiker Bersuara via Bot WA',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                            fontSize: 13.5,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                      ),
                     ),
-                  )
-                : Icon(buttonIcon, size: 22),
-            label: Text(
-              _isExporting ? 'Menghubungkan ke WhatsApp...' : buttonText,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold),
+                  ),
+                  const SizedBox(width: 8),
+                  SizedBox(
+                    width: 48,
+                    height: 48,
+                    child: OutlinedButton(
+                      key: const Key('config_audio_bot_button'),
+                      onPressed: (_isSendingViaBot || _isExporting)
+                          ? null
+                          : () => _sendPackViaAudioBot(pack, forceConfigSheet: true),
+                      style: OutlinedButton.styleFrom(
+                        padding: EdgeInsets.zero,
+                        foregroundColor: const Color(0xFFF09A06),
+                        side: const BorderSide(color: Color(0xFFF09A06), width: 1.4),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(14),
+                        ),
+                      ),
+                      child: const Icon(Icons.tune_rounded, size: 20),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 8),
+            ],
+            SizedBox(
+              width: double.infinity,
+              height: 52,
+              child: ElevatedButton.icon(
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: buttonColor,
+                  foregroundColor: Colors.white,
+                  elevation: canAdd ? 2 : 0,
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                ),
+                onPressed: (!canAdd || _isExporting) ? null : () => _exportToWhatsApp(pack),
+                icon: _isExporting
+                    ? const SizedBox(
+                        width: 20,
+                        height: 20,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2.2,
+                          color: Colors.white,
+                        ),
+                      )
+                    : Icon(buttonIcon, size: 22),
+                label: Text(
+                  _isExporting ? 'Menghubungkan ke WhatsApp...' : buttonText,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold),
+                ),
+              ),
             ),
-          ),
+          ],
         ),
       ),
     );

@@ -8,19 +8,31 @@ import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.graphics.Bitmap
+import android.media.AudioAttributes
+import android.media.MediaCodec
+import android.media.MediaExtractor
+import android.media.MediaFormat
+import android.media.MediaMetadataRetriever
+import android.media.MediaMuxer
+import android.media.MediaPlayer
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.net.Uri
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
 import android.widget.Toast
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
+import java.io.ByteArrayOutputStream
 import java.io.File
 import java.net.HttpURLConnection
 import java.net.InetAddress
 import java.net.URL
+import java.nio.ByteBuffer
 
 class MainActivity : FlutterActivity() {
 
@@ -58,9 +70,14 @@ class MainActivity : FlutterActivity() {
     private var pendingAddResult: MethodChannel.Result? = null
     private var pendingPackIdentifier: String? = null
     private var previouslyWhitelistedPackages: Set<String> = emptySet()
+    private var stickersMethodChannel: MethodChannel? = null
     private var updateNotificationChannel: MethodChannel? = null
     private var pendingNotificationPayload: Map<String, String>? = null
     private var exitToast: Toast? = null
+    private var stickerAudioPlayer: MediaPlayer? = null
+    private var currentAudioPath: String? = null
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private var audioStopRunnable: Runnable? = null
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
@@ -134,7 +151,9 @@ class MainActivity : FlutterActivity() {
             }
         }
 
-        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CHANNEL).setMethodCallHandler { call, result ->
+        val stickersCh = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CHANNEL)
+        stickersMethodChannel = stickersCh
+        stickersCh.setMethodCallHandler { call, result ->
             when (call.method) {
                 "getStickersDirectory" -> {
                     try {
@@ -322,6 +341,71 @@ class MainActivity : FlutterActivity() {
                     pendingPackIdentifier = identifier
                     previouslyWhitelistedPackages = getWhitelistedPackages(identifier)
                     launchAddPackIntent(identifier, name, targetPkg)
+                }
+
+                "extractVideoStickerWithAudio" -> {
+                    val videoPath = call.argument<String>("videoPath")
+                    val outputDirPath = call.argument<String>("outputDirPath")
+                    val maxDurationMs = call.argument<Int>("maxDurationMs") ?: 10000
+
+                    if (videoPath.isNullOrBlank()) {
+                        result.success(
+                            mapOf(
+                                "ok" to false,
+                                "errorCode" to "INVALID_ARGUMENT",
+                                "errorMessage" to "Lokasi berkas video tidak valid."
+                            )
+                        )
+                        return@setMethodCallHandler
+                    }
+
+                    val videoFile = File(videoPath)
+                    if (!videoFile.exists() || videoFile.length() <= 0L) {
+                        result.success(
+                            mapOf(
+                                "ok" to false,
+                                "errorCode" to "FILE_NOT_FOUND",
+                                "errorMessage" to "Berkas video tidak ditemukan atau kosong."
+                            )
+                        )
+                        return@setMethodCallHandler
+                    }
+
+                    val targetOutDir = if (!outputDirPath.isNullOrBlank()) {
+                        File(outputDirPath)
+                    } else {
+                        File(cacheDir, "video_sticker_audio")
+                    }
+                    if (!targetOutDir.exists()) {
+                        targetOutDir.mkdirs()
+                    }
+
+                    Thread {
+                        val payload = processVideoWithAudioFile(
+                            videoFile = videoFile,
+                            outputDir = targetOutDir,
+                            maxDurationMs = maxDurationMs
+                        )
+                        runOnUiThread {
+                            result.success(payload)
+                        }
+                    }.start()
+                }
+
+                "playStickerAudio" -> {
+                    val audioPath = call.argument<String>("audioPath")
+                    val maxDurationMs = call.argument<Int>("maxDurationMs") ?: 10000
+                    if (audioPath.isNullOrBlank()) {
+                        result.success(false)
+                        return@setMethodCallHandler
+                    }
+                    val started = startStickerAudioPlayback(audioPath, maxDurationMs)
+                    result.success(started)
+                }
+
+                "stopStickerAudio" -> {
+                    stopStickerAudioPlayback(notifyDart = false)
+                    result.success(true)
                 }
 
                 else -> result.notImplemented()
@@ -869,6 +953,389 @@ class MainActivity : FlutterActivity() {
             !address.hostAddress.isNullOrEmpty()
         } catch (_: Exception) {
             false
+        }
+    }
+
+    override fun onPause() {
+        super.onPause()
+        stopStickerAudioPlayback(notifyDart = true)
+    }
+
+    override fun onDestroy() {
+        stopStickerAudioPlayback(notifyDart = false)
+        super.onDestroy()
+    }
+
+    private fun startStickerAudioPlayback(audioPath: String, maxDurationMs: Int): Boolean {
+        stopStickerAudioPlayback(notifyDart = false)
+        val file = File(audioPath)
+        if (!file.exists() || file.length() <= 0L) {
+            return false
+        }
+
+        return try {
+            val player = MediaPlayer()
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                player.setAudioAttributes(
+                    AudioAttributes.Builder()
+                        .setUsage(AudioAttributes.USAGE_MEDIA)
+                        .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
+                        .build()
+                )
+            }
+            player.setDataSource(file.absolutePath)
+            player.isLooping = false
+            player.setOnCompletionListener {
+                stopStickerAudioPlayback(notifyDart = true)
+            }
+            player.setOnErrorListener { _, _, _ ->
+                stopStickerAudioPlayback(notifyDart = true)
+                true
+            }
+            player.prepare()
+            player.start()
+
+            stickerAudioPlayer = player
+            currentAudioPath = audioPath
+
+            val cappedMs = maxDurationMs.coerceIn(500, 10000).toLong()
+            val stopTask = Runnable {
+                if (currentAudioPath == audioPath) {
+                    stopStickerAudioPlayback(notifyDart = true)
+                }
+            }
+            audioStopRunnable = stopTask
+            mainHandler.postDelayed(stopTask, cappedMs)
+            true
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to play sticker audio: $audioPath", e)
+            stopStickerAudioPlayback(notifyDart = false)
+            false
+        }
+    }
+
+    private fun stopStickerAudioPlayback(notifyDart: Boolean) {
+        audioStopRunnable?.let { mainHandler.removeCallbacks(it) }
+        audioStopRunnable = null
+        val finishedPath = currentAudioPath
+        currentAudioPath = null
+
+        val player = stickerAudioPlayer
+        stickerAudioPlayer = null
+        if (player != null) {
+            try {
+                if (player.isPlaying) {
+                    player.stop()
+                }
+            } catch (_: Exception) {
+            }
+            try {
+                player.release()
+            } catch (_: Exception) {
+            }
+        }
+
+        if (notifyDart && finishedPath != null) {
+            runOnUiThread {
+                try {
+                    stickersMethodChannel?.invokeMethod(
+                        "onStickerAudioStopped",
+                        mapOf("audioPath" to finishedPath)
+                    )
+                } catch (_: Exception) {
+                }
+            }
+        }
+    }
+
+    private fun findAudioTrackIndex(videoPath: String): Pair<Int, String?> {
+        val extractor = MediaExtractor()
+        return try {
+            extractor.setDataSource(videoPath)
+            for (i in 0 until extractor.trackCount) {
+                val format = extractor.getTrackFormat(i)
+                val mime = format.getString(MediaFormat.KEY_MIME)
+                if (mime != null && mime.startsWith("audio/")) {
+                    return Pair(i, mime)
+                }
+            }
+            Pair(-1, null)
+        } catch (_: Exception) {
+            Pair(-1, null)
+        } finally {
+            try {
+                extractor.release()
+            } catch (_: Exception) {
+            }
+        }
+    }
+
+    private fun extractAudioSegmentFile(
+        videoFile: File,
+        outputDir: File,
+        maxDurationUs: Long
+    ): File? {
+        val (audioTrackIndex, audioMime) = findAudioTrackIndex(videoFile.absolutePath)
+        if (audioTrackIndex < 0) return null
+
+        val ts = System.nanoTime()
+        val useWebm = audioMime == "audio/opus" || audioMime == "audio/vorbis"
+        val ext = if (useWebm && Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) "webm" else "m4a"
+        val outFile = File(outputDir, "extracted_audio_$ts.$ext")
+
+        val extractor = MediaExtractor()
+        var muxer: MediaMuxer? = null
+        var muxerStarted = false
+
+        try {
+            extractor.setDataSource(videoFile.absolutePath)
+            val trackFormat = extractor.getTrackFormat(audioTrackIndex)
+            extractor.selectTrack(audioTrackIndex)
+
+            val muxerFormat = if (useWebm && Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                MediaMuxer.OutputFormat.MUXER_OUTPUT_WEBM
+            } else {
+                MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4
+            }
+
+            muxer = MediaMuxer(outFile.absolutePath, muxerFormat)
+            val dstTrack = muxer.addTrack(trackFormat)
+            muxer.start()
+            muxerStarted = true
+
+            val buffer = ByteBuffer.allocate(256 * 1024)
+            val bufferInfo = MediaCodec.BufferInfo()
+            var wroteSamples = 0
+
+            while (true) {
+                val sampleSize = extractor.readSampleData(buffer, 0)
+                if (sampleSize < 0) break
+
+                val sampleTimeUs = extractor.sampleTime
+                if (sampleTimeUs > maxDurationUs && wroteSamples > 0) {
+                    break
+                }
+
+                var codecFlags = 0
+                val sampleFlags = extractor.sampleFlags
+                if ((sampleFlags and MediaExtractor.SAMPLE_FLAG_SYNC) != 0) {
+                    codecFlags = codecFlags or MediaCodec.BUFFER_FLAG_KEY_FRAME
+                }
+
+                bufferInfo.offset = 0
+                bufferInfo.size = sampleSize
+                bufferInfo.presentationTimeUs = sampleTimeUs.coerceAtLeast(0L)
+                bufferInfo.flags = codecFlags
+
+                muxer.writeSampleData(dstTrack, buffer, bufferInfo)
+                wroteSamples++
+                extractor.advance()
+            }
+
+            muxer.stop()
+            muxerStarted = false
+
+            if (wroteSamples > 0 && outFile.exists() && outFile.length() > 0L) {
+                return outFile
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Direct audio remux failed ($audioMime), trying container fallback", e)
+        } finally {
+            if (muxer != null) {
+                if (muxerStarted) {
+                    try {
+                        muxer.stop()
+                    } catch (_: Exception) {
+                    }
+                }
+                try {
+                    muxer.release()
+                } catch (_: Exception) {
+                }
+            }
+            try {
+                extractor.release()
+            } catch (_: Exception) {
+            }
+        }
+
+        if (outFile.exists()) {
+            outFile.delete()
+        }
+
+        // Fallback for non-AAC/Opus codecs (e.g. MP3/PCM in <=10s clip): copy media for MediaPlayer
+        if (videoFile.length() <= 15L * 1024L * 1024L) {
+            val fallbackExt = videoFile.extension.ifBlank { "mp4" }
+            val fallbackFile = File(outputDir, "extracted_audio_$ts.$fallbackExt")
+            return try {
+                videoFile.copyTo(fallbackFile, overwrite = true)
+                fallbackFile
+            } catch (_: Exception) {
+                null
+            }
+        }
+        return null
+    }
+
+    private fun processVideoWithAudioFile(
+        videoFile: File,
+        outputDir: File,
+        maxDurationMs: Int
+    ): Map<String, Any?> {
+        val retriever = MediaMetadataRetriever()
+        try {
+            retriever.setDataSource(videoFile.absolutePath)
+            val durationStr = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)
+            val videoDurationMs = durationStr?.toLongOrNull() ?: 0L
+            if (videoDurationMs <= 0L) {
+                return mapOf(
+                    "ok" to false,
+                    "errorCode" to "INVALID_VIDEO",
+                    "errorMessage" to "Durasi berkas video tidak dapat dibaca atau berkas rusak."
+                )
+            }
+
+            // Allow up to +500ms tolerance for AAC packet rounding on 10.0s gallery videos
+            if (videoDurationMs > maxDurationMs.toLong() + 500L) {
+                return mapOf(
+                    "ok" to false,
+                    "errorCode" to "DURATION_EXCEEDED",
+                    "errorMessage" to "Durasi video melebihi batas maksimal 10 detik.",
+                    "originalDurationMs" to videoDurationMs.toInt()
+                )
+            }
+
+            val hasAudioMeta = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_HAS_AUDIO)
+                ?.equals("yes", ignoreCase = true) == true
+            val (audioTrackIndex, _) = findAudioTrackIndex(videoFile.absolutePath)
+            if (!hasAudioMeta && audioTrackIndex < 0) {
+                return mapOf(
+                    "ok" to false,
+                    "errorCode" to "NO_AUDIO",
+                    "errorMessage" to "Video tidak memiliki suara (audio). Pilih video dengan suara.",
+                    "originalDurationMs" to videoDurationMs.toInt()
+                )
+            }
+
+            val effectiveDurationMs = minOf(videoDurationMs, maxDurationMs.toLong()).toInt()
+            val audioFile = extractAudioSegmentFile(
+                videoFile = videoFile,
+                outputDir = outputDir,
+                maxDurationUs = effectiveDurationMs * 1000L
+            )
+            if (audioFile == null || !audioFile.exists() || audioFile.length() <= 0L) {
+                return mapOf(
+                    "ok" to false,
+                    "errorCode" to "NO_AUDIO",
+                    "errorMessage" to "Trek audio pada video tidak dapat diekstrak atau kosong.",
+                    "originalDurationMs" to videoDurationMs.toInt()
+                )
+            }
+
+            val rawWidth = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)
+                ?.toIntOrNull() ?: 480
+            val rawHeight = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)
+                ?.toIntOrNull() ?: 480
+            val rotation = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_ROTATION)
+                ?.toIntOrNull() ?: 0
+            val orientedW = if (rotation == 90 || rotation == 270) rawHeight else rawWidth
+            val orientedH = if (rotation == 90 || rotation == 270) rawWidth else rawHeight
+            val maxDim = 384
+            val scale = minOf(
+                maxDim.toFloat() / orientedW.coerceAtLeast(1),
+                maxDim.toFloat() / orientedH.coerceAtLeast(1),
+                1.0f
+            )
+            val targetW = (orientedW * scale).toInt().coerceAtLeast(1)
+            val targetH = (orientedH * scale).toInt().coerceAtLeast(1)
+
+            val targetFrames = when {
+                effectiveDurationMs <= 3000 -> ((effectiveDurationMs * 12) / 1000).coerceIn(8, 36)
+                effectiveDurationMs <= 6000 -> ((effectiveDurationMs * 10) / 1000).coerceIn(24, 60)
+                else -> ((effectiveDurationMs * 8) / 1000).coerceIn(48, 72)
+            }
+            val intervalUs = (effectiveDurationMs * 1000L) / targetFrames
+            val frameDurationMs = (effectiveDurationMs / targetFrames).coerceAtLeast(40)
+            val frameByteArrays = ArrayList<ByteArray>(targetFrames)
+
+            for (i in 0 until targetFrames) {
+                val timeUs = i * intervalUs
+                val bitmap: Bitmap? = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
+                    retriever.getScaledFrameAtTime(
+                        timeUs,
+                        MediaMetadataRetriever.OPTION_CLOSEST,
+                        targetW,
+                        targetH
+                    ) ?: retriever.getFrameAtTime(timeUs, MediaMetadataRetriever.OPTION_CLOSEST)
+                } else {
+                    retriever.getFrameAtTime(timeUs, MediaMetadataRetriever.OPTION_CLOSEST)
+                }
+
+                if (bitmap != null) {
+                    val finalBmp = if (bitmap.width > maxDim || bitmap.height > maxDim) {
+                        val s = minOf(maxDim.toFloat() / bitmap.width, maxDim.toFloat() / bitmap.height)
+                        Bitmap.createScaledBitmap(
+                            bitmap,
+                            (bitmap.width * s).toInt().coerceAtLeast(1),
+                            (bitmap.height * s).toInt().coerceAtLeast(1),
+                            true
+                        )
+                    } else {
+                        bitmap
+                    }
+
+                    val baos = ByteArrayOutputStream()
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                        finalBmp.compress(Bitmap.CompressFormat.WEBP_LOSSY, 86, baos)
+                    } else {
+                        @Suppress("DEPRECATION")
+                        finalBmp.compress(Bitmap.CompressFormat.WEBP, 86, baos)
+                    }
+                    frameByteArrays.add(baos.toByteArray())
+
+                    if (finalBmp !== bitmap) {
+                        finalBmp.recycle()
+                    }
+                    bitmap.recycle()
+                }
+            }
+
+            if (frameByteArrays.isEmpty()) {
+                audioFile.delete()
+                return mapOf(
+                    "ok" to false,
+                    "errorCode" to "FRAME_EXTRACTION_FAILED",
+                    "errorMessage" to "Gagal membaca frame visual dari berkas video."
+                )
+            }
+
+            // Ensure at least 2 frames for animated WebP compliance
+            if (frameByteArrays.size == 1) {
+                frameByteArrays.add(frameByteArrays[0])
+            }
+
+            return mapOf(
+                "ok" to true,
+                "hasAudio" to true,
+                "frames" to frameByteArrays,
+                "frameDurationMs" to frameDurationMs,
+                "totalDurationMs" to effectiveDurationMs,
+                "originalDurationMs" to videoDurationMs.toInt(),
+                "audioFilePath" to audioFile.absolutePath,
+                "audioExtension" to audioFile.extension.ifBlank { "m4a" }
+            )
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to process video with audio", e)
+            return mapOf(
+                "ok" to false,
+                "errorCode" to "EXTRACTION_ERROR",
+                "errorMessage" to "Gagal memproses video: ${e.localizedMessage ?: "Format tidak didukung"}"
+            )
+        } finally {
+            try {
+                retriever.release()
+            } catch (_: Exception) {
+            }
         }
     }
 }

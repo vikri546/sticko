@@ -406,6 +406,42 @@ class _HomeScreenState extends State<HomeScreen> {
                                   overflow: TextOverflow.ellipsis,
                                 ),
                               ),
+                              if (pack.videoAudioStickerPack) ...[
+                                const SizedBox(width: 6),
+                                Container(
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 6,
+                                    vertical: 2,
+                                  ),
+                                  decoration: BoxDecoration(
+                                    color: const Color(0xFF25D366).withAlpha(35),
+                                    borderRadius: BorderRadius.circular(4),
+                                    border: Border.all(
+                                      color: const Color(0xFF25D366).withAlpha(130),
+                                      width: 0.8,
+                                    ),
+                                  ),
+                                  child: Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      const Icon(
+                                        Icons.volume_up_rounded,
+                                        size: 10,
+                                        color: Color(0xFF25D366),
+                                      ),
+                                      const SizedBox(width: 3),
+                                      Text(
+                                        'Audio',
+                                        style: GoogleFonts.plusJakartaSans(
+                                          fontSize: 10,
+                                          fontWeight: FontWeight.bold,
+                                          color: const Color(0xFF25D366),
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ],
                               if (DeveloperStickerPacks.isProtectedPack(pack)) ...[
                                 const SizedBox(width: 6),
                                 Container(

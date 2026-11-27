@@ -6,6 +6,7 @@ import 'package:sticker_flutter/services/whatsapp_stickers_service.dart';
 class StickerGridTile extends StatelessWidget {
   final StickerItem sticker;
   final String? filePath;
+  final String? audioFilePath;
   final VoidCallback onDelete;
   final VoidCallback? onTap;
   final bool isDragTargetHighlighted;
@@ -15,6 +16,7 @@ class StickerGridTile extends StatelessWidget {
     super.key,
     required this.sticker,
     required this.filePath,
+    this.audioFilePath,
     required this.onDelete,
     this.onTap,
     this.isDragTargetHighlighted = false,
@@ -129,6 +131,45 @@ class StickerGridTile extends StatelessWidget {
                   borderRadius: BorderRadius.circular(16),
                   onTap: onTap,
                 ),
+              ),
+            ),
+
+          // Tap-to-Play Speaker Badge for Video+Audio Stickers (above tap layer, independent like WhatsApp Sound Stickers)
+          if (sticker.hasAudio && audioFilePath != null)
+            Positioned(
+              bottom: 5,
+              right: 5,
+              child: ValueListenableBuilder<String?>(
+                valueListenable: WhatsAppStickersService.activePlayingAudioPath,
+                builder: (context, playingPath, _) {
+                  final isPlaying = playingPath == audioFilePath;
+                  return Material(
+                    color: isPlaying
+                        ? const Color(0xFFF09A06)
+                        : const Color(0xFF128C7E).withAlpha(220),
+                    shape: const CircleBorder(),
+                    child: InkWell(
+                      key: ValueKey('sticker_audio_btn_${sticker.imageFileName}'),
+                      customBorder: const CircleBorder(),
+                      onTap: () {
+                        WhatsAppStickersService.toggleStickerAudio(
+                          audioFilePath!,
+                          maxDurationMs: sticker.durationMs ?? 10000,
+                        );
+                      },
+                      child: Padding(
+                        padding: const EdgeInsets.all(5.5),
+                        child: Icon(
+                          isPlaying
+                              ? Icons.stop_rounded
+                              : Icons.volume_up_rounded,
+                          size: 13,
+                          color: Colors.white,
+                        ),
+                      ),
+                    ),
+                  );
+                },
               ),
             ),
 

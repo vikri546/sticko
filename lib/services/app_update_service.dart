@@ -86,24 +86,38 @@ class AppVersionRelease {
 /// Service that handles app version comparison, remote check, status bar notifications,
 /// and automatic APK download & installation.
 class AppUpdateService {
-  static const String defaultCurrentVersion = '1.0.7+8';
-  static const String defaultReleaseTag = 'sticko-5';
+  static const String defaultCurrentVersion = '1.0.8+9';
+  static const String defaultReleaseTag = 'sticko-6';
   static const List<String> defaultChangelog = [
-    'Fitur: Paket stiker bawaan developer Stiker-Kucing-1 (30 stiker siap pakai oleh pkri) langsung di halaman Explore',
-    'Fitur: Upload & konversi stiker animasi khusus format .gif (mendukung berbagai variasi GIF web seperti Giphy)',
-    'Fitur: Mode pratinjau (preview) stiker pada modal paket di halaman Koleksi Kreator',
-    'Perbaikan: Animasi stiker .gif kini berjalan mulus tanpa patah-patah atau penurunan FPS seperti file aslinya',
-    'Perbaikan: Kegagalan unggah berkas .gif pada menu tambah stiker animasi',
-    'Perbaikan: Pemisahan tampilan preview di modal paket dengan editor stiker di halaman kelola paket',
+    'Fitur: Pembuatan paket Stiker Video Audio (MP4 bersuara maks. 10 detik) dengan pemutar suara langsung',
+    'Fitur: Pengiriman Stiker Audio otomatis ke chat WhatsApp melalui integrasi Chatbot resmi Sticko',
+    'Fitur: Editor Crop (Fit, Penuh, Bulat) dan Zoom interaktif khusus Stiker Audio',
+    'Perbaikan: Dukungan cadangan & pemulihan (ZIP) penuh untuk paket Stiker Video Audio',
+    'Perbaikan: Optimalisasi kompresi animasi WebP dan validasi koneksi server Stiker Audio',
   ];
 
   /// Complete chronological release history across Sticko APK versions.
   static const List<AppVersionRelease> defaultVersionHistory = [
     AppVersionRelease(
+      version: '1.0.8+9',
+      releaseTag: 'sticko-6',
+      releaseDate: '27 Nov 2026',
+      isLatest: true,
+      features: [
+        'Pembuatan paket Stiker Video Audio (MP4 bersuara maks. 10 detik) lengkap dengan pratinjau suara',
+        'Integrasi Chatbot resmi Sticko untuk mengirim Stiker Audio langsung ke chat WhatsApp',
+        'Editor Crop (Fit, Penuh, Bulat) dan Zoom interaktif pada Stiker Video Audio',
+      ],
+      bugFixes: [
+        'Dukungan cadangan & pemulihan arsip ZIP penuh untuk paket Stiker Video Audio',
+        'Optimalisasi kompresi animasi WebP (< 500 KB) dan stabilitas koneksi server bot',
+      ],
+    ),
+    AppVersionRelease(
       version: '1.0.7+8',
       releaseTag: 'sticko-5',
       releaseDate: '20 Nov 2026',
-      isLatest: true,
+      isLatest: false,
       features: [
         'Koleksi paket stiker bawaan developer pertama (Stiker-Kucing-1 oleh pkri, 30 stiker) langsung hadir di halaman Explore dengan badge Bawaan, tetap dapat diedit & diurutkan namun terlindungi dari penghapusan',
         'Input stiker animasi difokuskan khusus format .gif dengan dukungan penuh berbagai jenis berkas GIF web (seperti Giphy) ke WebP animasi 512 × 512 px (< 500 KB)',
@@ -197,7 +211,7 @@ class AppUpdateService {
   static const String defaultUpdateCheckUrl =
       'https://raw.githubusercontent.com/vikri546/sticko/main/version.json';
   static const String defaultDirectApkUrl =
-      'https://github.com/vikri546/sticko/releases/download/sticko-5/sticko-app-1.0.7.apk';
+      'https://github.com/vikri546/sticko/releases/download/sticko-6/sticko-app-1.0.8.apk';
 
   static bool _isDialogShowing = false;
 

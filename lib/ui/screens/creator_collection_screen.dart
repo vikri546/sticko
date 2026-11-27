@@ -3,9 +3,12 @@ import 'dart:ui';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'package:sticker_flutter/services/audio_sticker_bot_service.dart';
 import 'package:sticker_flutter/services/sticker_pack_manager.dart';
 import 'package:sticker_flutter/services/whatsapp_stickers_service.dart';
 import 'package:sticker_flutter/ui/screens/pack_detail_screen.dart';
+import 'package:sticker_flutter/ui/widgets/app_notification.dart';
+import 'package:sticker_flutter/ui/widgets/audio_bot_bridge_sheet.dart';
 import 'package:sticker_flutter/ui/widgets/create_pack_dialog.dart';
 
 /// Screen displaying Creator Content split into 3 tabs:
@@ -394,6 +397,9 @@ class _CreatorCollectionScreenState extends State<CreatorCollectionScreen>
   }) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
     final file = filePath != null ? File(filePath) : null;
+    final audioPath = sticker.hasAudio
+        ? _manager.getAudioFilePath(pack.identifier, sticker.audioFileName)
+        : null;
 
     showModalBottomSheet(
       context: context,
@@ -458,6 +464,108 @@ class _CreatorCollectionScreenState extends State<CreatorCollectionScreen>
                   color: isDark ? Colors.grey[400] : Colors.grey[600],
                 ),
               ),
+              if (audioPath != null) ...[
+                const SizedBox(height: 12),
+                Wrap(
+                  alignment: WrapAlignment.center,
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: [
+                    ValueListenableBuilder<String?>(
+                      valueListenable: WhatsAppStickersService.activePlayingAudioPath,
+                      builder: (context, playingPath, _) {
+                        final isPlaying = playingPath == audioPath;
+                        return OutlinedButton.icon(
+                          onPressed: () {
+                            WhatsAppStickersService.toggleStickerAudio(
+                              audioPath,
+                              maxDurationMs: sticker.durationMs ?? 10000,
+                            );
+                          },
+                          style: OutlinedButton.styleFrom(
+                            foregroundColor: isPlaying
+                                ? const Color(0xFFF09A06)
+                                : const Color(0xFF25D366),
+                            side: BorderSide(
+                              color: isPlaying
+                                  ? const Color(0xFFF09A06)
+                                  : const Color(0xFF25D366),
+                            ),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(16),
+                            ),
+                          ),
+                          icon: Icon(
+                            isPlaying
+                                ? Icons.stop_circle_rounded
+                                : Icons.volume_up_rounded,
+                            size: 18,
+                          ),
+                          label: Text(
+                            isPlaying ? 'Hentikan Suara' : 'Putar Suara Stiker',
+                            style: GoogleFonts.plusJakartaSans(
+                              fontWeight: FontWeight.bold,
+                              fontSize: 12.5,
+                            ),
+                          ),
+                        );
+                      },
+                    ),
+                    if (file != null && file.existsSync() && File(audioPath).existsSync())
+                      OutlinedButton.icon(
+                        onPressed: () async {
+                          await WhatsAppStickersService.stopStickerAudio();
+                          final dotIdx = audioPath.lastIndexOf('.');
+                          final ext = (dotIdx != -1 && dotIdx < audioPath.length - 1)
+                              ? audioPath.substring(dotIdx + 1).toLowerCase()
+                              : 'm4a';
+                          final item = AudioStickerBridgeItem(
+                            webpBytes: file.readAsBytesSync(),
+                            audioBytes: File(audioPath).readAsBytesSync(),
+                            audioExt: ext,
+                            durationMs: sticker.durationMs ?? 5000,
+                            emojis: sticker.emojis,
+                          );
+                          final botService = AudioStickerBotService();
+                          await botService.loadConfig();
+                          if (!ctx.mounted) return;
+                          if (!botService.isConfigured) {
+                            await AudioBotBridgeSheet.show(
+                              ctx,
+                              title: 'Kirim Stiker Audio ke WA',
+                              itemsToSend: [item],
+                            );
+                          } else {
+                            final res = await botService.sendItemsViaBridge(
+                              items: [item],
+                            );
+                            if (!ctx.mounted) return;
+                            AppNotification.show(
+                              ctx,
+                              message: res.message,
+                              isSuccess: res.success,
+                            );
+                          }
+                        },
+                        style: OutlinedButton.styleFrom(
+                          foregroundColor: const Color(0xFFF09A06),
+                          side: const BorderSide(color: Color(0xFFF09A06)),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(16),
+                          ),
+                        ),
+                        icon: const Icon(Icons.smart_toy_rounded, size: 18),
+                        label: Text(
+                          'Kirim via Bot WA',
+                          style: GoogleFonts.plusJakartaSans(
+                            fontWeight: FontWeight.bold,
+                            fontSize: 12.5,
+                          ),
+                        ),
+                      ),
+                  ],
+                ),
+              ],
               const SizedBox(height: 20),
               SizedBox(
                 width: double.infinity,
@@ -471,6 +579,7 @@ class _CreatorCollectionScreenState extends State<CreatorCollectionScreen>
                     ),
                   ),
                   onPressed: () {
+                    WhatsAppStickersService.stopStickerAudio();
                     Navigator.of(ctx).pop();
                     if (!fromPackModal) {
                       Navigator.of(context).push(
@@ -491,7 +600,7 @@ class _CreatorCollectionScreenState extends State<CreatorCollectionScreen>
           ),
         );
       },
-    );
+    ).whenComplete(WhatsAppStickersService.stopStickerAudio);
   }
 
   @override

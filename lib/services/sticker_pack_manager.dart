@@ -56,6 +56,16 @@ class StickerPackManager extends ChangeNotifier {
     return '$_stickersDirectory/$packIdentifier/$trayFileName';
   }
 
+  /// Get the absolute file path for a sticker's companion audio file, if any.
+  String? getAudioFilePath(String packIdentifier, String? audioFileName) {
+    if (_stickersDirectory == null ||
+        audioFileName == null ||
+        audioFileName.isEmpty) {
+      return null;
+    }
+    return '$_stickersDirectory/$packIdentifier/$audioFileName';
+  }
+
   /// Check whether a pack is a protected built-in developer pack.
   bool isDeveloperPack(String packIdentifier) {
     final pack = getPack(packIdentifier);
@@ -154,6 +164,7 @@ class StickerPackManager extends ChangeNotifier {
     required String name,
     String publisher = 'Sticker Maker',
     bool animatedStickerPack = false,
+    bool videoAudioStickerPack = false,
   }) async {
     final timestamp = DateTime.now().microsecondsSinceEpoch;
     final identifier = 'pack_${timestamp}_${++_packCounter}';
@@ -165,13 +176,15 @@ class StickerPackManager extends ChangeNotifier {
       packDir.createSync(recursive: true);
     }
 
+    final effectiveAnimated = animatedStickerPack || videoAudioStickerPack;
     final newPack = StickerPack(
       identifier: identifier,
       name: name.trim().isEmpty ? 'Koleksi Stiker Baru' : name.trim(),
       publisher: publisher.trim().isEmpty ? 'Sticker Maker' : publisher.trim(),
       trayImageFile: 'tray.png',
       imageDataVersion: '1',
-      animatedStickerPack: animatedStickerPack,
+      animatedStickerPack: effectiveAnimated,
+      videoAudioStickerPack: videoAudioStickerPack,
       stickers: const [],
     );
 
@@ -185,11 +198,20 @@ class StickerPackManager extends ChangeNotifier {
     return newPack;
   }
 
-  /// Add a sticker from raw image bytes into an existing pack.
+  static String _extractAudioExtension(String path) {
+    final dotIdx = path.lastIndexOf('.');
+    if (dotIdx == -1 || dotIdx == path.length - 1) return 'm4a';
+    final ext = path.substring(dotIdx + 1).trim().toLowerCase();
+    return ext.isEmpty ? 'm4a' : ext;
+  }
+
+  /// Add a sticker from raw image bytes (and optional companion audio) into an existing pack.
   Future<StickerItem> addStickerToPack({
     required String packIdentifier,
     required Uint8List imageBytes,
     List<String> emojis = const ['😀'],
+    String? sourceAudioFilePath,
+    int? durationMs,
   }) async {
     final packIndex = _packs.indexWhere((p) => p.identifier == packIdentifier);
     if (packIndex == -1) {
@@ -201,18 +223,36 @@ class StickerPackManager extends ChangeNotifier {
       throw Exception('Paket stiker sudah mencapai batas maksimal 30 stiker.');
     }
 
-    final isAnimated = StickerImageProcessor.isAnimatedMedia(imageBytes);
-    bool shouldBeAnimated = currentPack.animatedStickerPack;
+    final hasSourceAudio = sourceAudioFilePath != null &&
+        sourceAudioFilePath.isNotEmpty &&
+        File(sourceAudioFilePath).existsSync();
 
-    if (isAnimated && currentPack.stickers.isEmpty) {
+    if (currentPack.videoAudioStickerPack && !hasSourceAudio) {
+      throw Exception(
+        'Paket ini adalah Paket Video Audio. Stiker yang ditambahkan harus berasal dari video bersuara (maks 10 detik).',
+      );
+    }
+    if (!currentPack.videoAudioStickerPack && hasSourceAudio) {
+      throw Exception(
+        'Stiker video bersuara hanya dapat ditambahkan ke Paket Video Audio.',
+      );
+    }
+
+    final isAnimated = StickerImageProcessor.isAnimatedMedia(imageBytes);
+    bool shouldBeAnimated =
+        currentPack.animatedStickerPack || currentPack.videoAudioStickerPack;
+
+    if (isAnimated && currentPack.stickers.isEmpty && !currentPack.videoAudioStickerPack) {
       shouldBeAnimated = true;
-    } else if (isAnimated && !currentPack.animatedStickerPack) {
+    } else if (isAnimated && !shouldBeAnimated) {
       throw Exception(
         'WhatsApp tidak mengizinkan mencampur stiker statis dan animasi dalam satu paket. Silakan gunakan atau buat Paket Animasi.',
       );
-    } else if (!isAnimated && currentPack.animatedStickerPack) {
+    } else if (!isAnimated && shouldBeAnimated) {
       throw Exception(
-        'Paket ini adalah Paket Animasi. Stiker yang ditambahkan harus berupa animasi .gif.',
+        currentPack.videoAudioStickerPack
+            ? 'Paket ini adalah Paket Video Audio. Pilih berkas video (.mp4 dsb.) yang bergerak dan bersuara.'
+            : 'Paket ini adalah Paket Animasi. Stiker yang ditambahkan harus berupa animasi .gif.',
       );
     }
 
@@ -220,7 +260,8 @@ class StickerPackManager extends ChangeNotifier {
         await WhatsAppStickersService.getStickersDirectory();
     final packDirPath = '$dirPath/$packIdentifier';
     final timestamp = DateTime.now().microsecondsSinceEpoch;
-    final fileName = 'sticker_${timestamp}_${++_stickerCounter}.webp';
+    final currentIdx = ++_stickerCounter;
+    final fileName = 'sticker_${timestamp}_$currentIdx.webp';
 
     final maxBytes = shouldBeAnimated
         ? WhatsAppStickerValidator.maxAnimatedStickerFileSizeBytes
@@ -236,6 +277,13 @@ class StickerPackManager extends ChangeNotifier {
       fileName: fileName,
       bytes: processed.webpBytes,
     );
+
+    String? savedAudioFileName;
+    if (hasSourceAudio) {
+      final ext = _extractAudioExtension(sourceAudioFilePath);
+      savedAudioFileName = 'audio_${timestamp}_$currentIdx.$ext';
+      File(sourceAudioFilePath).copySync('$packDirPath/$savedAudioFileName');
+    }
 
     // 2. Generate tray icon from this sticker if it doesn't exist yet
     final trayFile = File('$packDirPath/tray.png');
@@ -253,6 +301,8 @@ class StickerPackManager extends ChangeNotifier {
     final newSticker = StickerItem(
       imageFileName: fileName,
       emojis: emojis,
+      audioFileName: savedAudioFileName,
+      durationMs: durationMs,
       createdAt: now,
       updatedAt: now,
     );
@@ -273,13 +323,15 @@ class StickerPackManager extends ChangeNotifier {
     return newSticker;
   }
 
-  /// Add multiple stickers in batch from raw image bytes into an existing pack.
+  /// Add multiple stickers in batch from raw image bytes (and optional audio tracks) into an existing pack.
   /// Automatically processes each to compliant 512x512 WebP (< 100 KB or < 500 KB for animated).
   /// Reports progress via optional [onProgress] callback.
   Future<List<StickerItem>> addMultipleStickersToPack({
     required String packIdentifier,
     required List<Uint8List> imagesBytesList,
     List<String> defaultEmojis = const ['😀'],
+    List<String?>? sourceAudioFilePaths,
+    List<int?>? durationsMs,
     void Function(int current, int total)? onProgress,
   }) async {
     final packIndex = _packs.indexWhere((p) => p.identifier == packIdentifier);
@@ -297,7 +349,7 @@ class StickerPackManager extends ChangeNotifier {
     final dirPath = _stickersDirectory ??
         await WhatsAppStickersService.getStickersDirectory();
     final packDirPath = '$dirPath/$packIdentifier';
-    final maxBytes = currentPack.animatedStickerPack
+    final maxBytes = (currentPack.animatedStickerPack || currentPack.videoAudioStickerPack)
         ? WhatsAppStickerValidator.maxAnimatedStickerFileSizeBytes
         : WhatsAppStickerValidator.maxStickerFileSizeBytes;
 
@@ -307,8 +359,23 @@ class StickerPackManager extends ChangeNotifier {
     for (int i = 0; i < total; i++) {
       onProgress?.call(i + 1, total);
       final imageBytes = toAddBytes[i];
+      final sourceAudio =
+          (sourceAudioFilePaths != null && i < sourceAudioFilePaths.length)
+              ? sourceAudioFilePaths[i]
+              : null;
+      final itemDuration =
+          (durationsMs != null && i < durationsMs.length) ? durationsMs[i] : null;
+
+      if (currentPack.videoAudioStickerPack &&
+          (sourceAudio == null || !File(sourceAudio).existsSync())) {
+        throw Exception(
+          'Paket Video Audio mewajibkan setiap stiker memiliki berkas suara (audio).',
+        );
+      }
+
       final timestamp = DateTime.now().microsecondsSinceEpoch;
-      final fileName = 'sticker_${timestamp}_${++_stickerCounter}.webp';
+      final currentIdx = ++_stickerCounter;
+      final fileName = 'sticker_${timestamp}_$currentIdx.webp';
 
       // 1. Process image to compliant 512x512 WebP (guaranteed <= maxBytes)
       final processed = await StickerImageProcessor.processToStickerWebp(
@@ -320,6 +387,13 @@ class StickerPackManager extends ChangeNotifier {
         fileName: fileName,
         bytes: processed.webpBytes,
       );
+
+      String? savedAudioFileName;
+      if (sourceAudio != null && File(sourceAudio).existsSync()) {
+        final ext = _extractAudioExtension(sourceAudio);
+        savedAudioFileName = 'audio_${timestamp}_$currentIdx.$ext';
+        File(sourceAudio).copySync('$packDirPath/$savedAudioFileName');
+      }
 
       // 2. Generate tray icon from this sticker if it doesn't exist yet
       final trayFile = File('$packDirPath/tray.png');
@@ -333,6 +407,8 @@ class StickerPackManager extends ChangeNotifier {
       newStickers.add(StickerItem(
         imageFileName: fileName,
         emojis: defaultEmojis.isNotEmpty ? defaultEmojis : ['😀'],
+        audioFileName: savedAudioFileName,
+        durationMs: itemDuration,
         createdAt: itemNow,
         updatedAt: itemNow,
       ));
@@ -367,9 +443,23 @@ class StickerPackManager extends ChangeNotifier {
 
     final dirPath = _stickersDirectory ??
         await WhatsAppStickersService.getStickersDirectory();
+    final removedItem = currentPack.stickers
+        .where((s) => s.imageFileName == fileName)
+        .firstOrNull;
+
     final file = File('$dirPath/$packIdentifier/$fileName');
     if (file.existsSync()) {
       file.deleteSync();
+    }
+    if (removedItem != null && removedItem.hasAudio) {
+      final audioPath = '$dirPath/$packIdentifier/${removedItem.audioFileName}';
+      if (WhatsAppStickersService.activePlayingAudioPath.value == audioPath) {
+        await WhatsAppStickersService.stopStickerAudio();
+      }
+      final audioFile = File(audioPath);
+      if (audioFile.existsSync()) {
+        audioFile.deleteSync();
+      }
     }
 
     final currentVersion = int.tryParse(currentPack.imageDataVersion) ?? 1;
@@ -425,12 +515,14 @@ class StickerPackManager extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Replace an existing sticker in a pack with new image bytes.
+  /// Replace an existing sticker in a pack with new image bytes (preserving or updating companion audio).
   Future<StickerItem> replaceStickerInPack({
     required String packIdentifier,
     required String oldFileName,
     required Uint8List newImageBytes,
     List<String>? newEmojis,
+    String? newSourceAudioFilePath,
+    int? newDurationMs,
   }) async {
     final packIndex = _packs.indexWhere((p) => p.identifier == packIdentifier);
     if (packIndex == -1) {
@@ -465,9 +557,10 @@ class StickerPackManager extends ChangeNotifier {
 
     final now = DateTime.now();
     final timestamp = now.microsecondsSinceEpoch;
-    final newFileName = 'sticker_${timestamp}_${++_stickerCounter}.webp';
+    final currentIdx = ++_stickerCounter;
+    final newFileName = 'sticker_${timestamp}_$currentIdx.webp';
 
-    final maxBytes = currentPack.animatedStickerPack
+    final maxBytes = (currentPack.animatedStickerPack || currentPack.videoAudioStickerPack)
         ? WhatsAppStickerValidator.maxAnimatedStickerFileSizeBytes
         : WhatsAppStickerValidator.maxStickerFileSizeBytes;
 
@@ -483,12 +576,36 @@ class StickerPackManager extends ChangeNotifier {
       bytes: processed.webpBytes,
     );
 
+    String? finalAudioFileName = oldSticker.audioFileName;
+    int? finalDurationMs = newDurationMs ?? oldSticker.durationMs;
+    if (newSourceAudioFilePath != null &&
+        newSourceAudioFilePath.isNotEmpty &&
+        File(newSourceAudioFilePath).existsSync()) {
+      if (oldSticker.hasAudio) {
+        final oldAudioPath = '$packDirPath/${oldSticker.audioFileName}';
+        if (WhatsAppStickersService.activePlayingAudioPath.value == oldAudioPath) {
+          await WhatsAppStickersService.stopStickerAudio();
+        }
+        final oldAudioFile = File(oldAudioPath);
+        if (oldAudioFile.existsSync()) {
+          try {
+            oldAudioFile.deleteSync();
+          } catch (_) {}
+        }
+      }
+      final ext = _extractAudioExtension(newSourceAudioFilePath);
+      finalAudioFileName = 'audio_${timestamp}_$currentIdx.$ext';
+      File(newSourceAudioFilePath).copySync('$packDirPath/$finalAudioFileName');
+    }
+
     final currentVersion = int.tryParse(currentPack.imageDataVersion) ?? 1;
     final newVersion = (currentVersion + 1).toString();
 
     final updatedSticker = StickerItem(
       imageFileName: newFileName,
       emojis: newEmojis ?? oldSticker.emojis,
+      audioFileName: finalAudioFileName,
+      durationMs: finalDurationMs,
       createdAt: preservedCreatedAt,
       updatedAt: now,
     );
@@ -511,6 +628,8 @@ class StickerPackManager extends ChangeNotifier {
     if (isDeveloperPack(packIdentifier)) {
       throw Exception('Paket bawaan developer tidak dapat dihapus.');
     }
+
+    await WhatsAppStickersService.stopStickerAudio();
 
     final dirPath = _stickersDirectory ??
         await WhatsAppStickersService.getStickersDirectory();
