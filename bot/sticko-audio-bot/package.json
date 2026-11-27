@@ -6,6 +6,7 @@
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
+    "clean-sessions": "node -e \"import('node:fs').then(fs => { const dir = './auth_session'; if (!fs.existsSync(dir)) return; let n = 0; for (const f of fs.readdirSync(dir)) { if (f.startsWith('session-') || f.startsWith('sender-key-')) { fs.rmSync(dir + '/' + f, { force: true }); n++; } } console.log('🧹 Berhasil menghapus ' + n + ' file sesi Signal lama (login creds.json tetap aman!).'); })\"",
     "reset-auth": "rm -rf ./auth_session"
   },
   "dependencies": {

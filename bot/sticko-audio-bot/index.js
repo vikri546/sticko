@@ -139,7 +139,28 @@ function createMemoryCacheStore(ttlMs = 10 * 60 * 1000, maxEntries = 500) {
 const msgRetryCounterCache = createMemoryCacheStore(15 * 60 * 1000, 1000);
 const sentMessageStore = new Map();
 const sentMessageById = new Map();
+const lidToPnMap = new Map();
 const MAX_STORED_MESSAGES = 250;
+
+function normalizeToPnJid(raw) {
+  if (!raw || typeof raw !== 'string') return null;
+  const trimmed = raw.trim();
+  if (!trimmed || trimmed.endsWith('@lid') || trimmed.endsWith('@g.us')) return null;
+  if (trimmed.includes('@s.whatsapp.net')) {
+    return jidNormalizedUser(trimmed);
+  }
+  const digits = normalizePhoneDigits(trimmed);
+  return digits ? `${digits}@s.whatsapp.net` : null;
+}
+
+function recordLidMapping(lid, pn) {
+  if (!lid || !pn) return;
+  const normLid = String(lid).includes('@lid') ? jidNormalizedUser(String(lid)) : null;
+  const normPn = normalizeToPnJid(String(pn));
+  if (normLid && normPn) {
+    lidToPnMap.set(normLid, normPn);
+  }
+}
 
 function rememberSentMessage(jid, id, message) {
   if (!id || !message) return;
@@ -160,11 +181,20 @@ function rememberSentMessage(jid, id, message) {
 function getStoredMessage(key) {
   if (!key?.id) return undefined;
   const normJid = key.remoteJid ? jidNormalizedUser(key.remoteJid) : '';
-  return sentMessageStore.get(`${normJid}:${key.id}`) || sentMessageById.get(key.id);
+  const found = sentMessageStore.get(`${normJid}:${key.id}`) || sentMessageById.get(key.id);
+  console.log(
+    `🔁 Retry dekripsi WA diminta (id: ${key.id}) -> ${found ? 'pesan ditemukan & dikirim ulang ✅' : 'tidak ada di cache ⚠️'}`,
+  );
+  return found;
 }
 
 async function sendTrackedText(sock, jid, text) {
-  const sent = await sock.sendMessage(jid, { text });
+  const msgId = typeof generateMessageIDV2 === 'function'
+    ? generateMessageIDV2(sock.user?.id)
+    : `TXT${Date.now()}${Math.floor(Math.random() * 10000)}`;
+  // Pre-register message BEFORE transmission so immediate E2EE retry receipts never miss cache
+  rememberSentMessage(jid, msgId, { conversation: text });
+  const sent = await sock.sendMessage(jid, { text }, { messageId: msgId });
   if (sent?.key?.id && sent.message) {
     rememberSentMessage(sent.key.remoteJid || jid, sent.key.id, sent.message);
   }
@@ -403,12 +433,34 @@ async function sendSoundStickerMessage(sock, jid, {
 }
 
 function resolveReplyJid(msg) {
-  const remoteJid = msg?.key?.remoteJid || '';
-  if (remoteJid.endsWith('@lid')) {
-    const alt = msg?.key?.remoteJidAlt || msg?.key?.senderPn || '';
-    if (typeof alt === 'string' && alt.endsWith('@s.whatsapp.net')) {
-      return alt;
+  const key = msg?.key || {};
+  const remoteJid = key.remoteJid || '';
+  const candidates = [key.senderPn, key.remoteJidAlt, key.participantPn];
+
+  // Record any LID -> PN mapping exposed by Baileys 6.7.x/7.x message metadata
+  for (const cand of candidates) {
+    if (remoteJid.endsWith('@lid')) {
+      recordLidMapping(remoteJid, cand);
     }
+    if (key.senderLid) {
+      recordLidMapping(key.senderLid, cand);
+    }
+  }
+
+  // Always prefer normalized @s.whatsapp.net PN over raw @lid in Baileys 6.7.x
+  // because 1-on-1 @lid sends in 6.7.x lack addressing_mode and trigger "Waiting for this message".
+  if (remoteJid.endsWith('@lid')) {
+    for (const cand of candidates) {
+      const pnJid = normalizeToPnJid(cand);
+      if (pnJid) return pnJid;
+    }
+    const cachedPn = lidToPnMap.get(jidNormalizedUser(remoteJid));
+    if (cachedPn) return cachedPn;
+    return remoteJid;
+  }
+
+  if (remoteJid.endsWith('@s.whatsapp.net')) {
+    return jidNormalizedUser(remoteJid);
   }
   return remoteJid;
 }
@@ -436,7 +488,7 @@ async function handleIncomingChatMessage(sock, msg) {
       '🔊 *Sticko Audio Sticker Bot Aktif!*\n\n' +
         'Nomor Anda sudah terhubung dengan bot. Sekarang Anda bisa kembali ke aplikasi *Sticko* dan ketuk *Kirim Stiker Bersuara via Bot WA*, atau kirim video (<= 10s) langsung di chat ini dengan caption *!sa*.',
     );
-    console.log(`💬 Membalas sapaan (${lower}) ke ${remoteJid.split('@')[0]}`);
+    console.log(`💬 Membalas sapaan (${lower}) -> ${remoteJid} (asal: ${rawRemoteJid})`);
     return;
   }
 
@@ -554,6 +606,20 @@ async function startWhatsAppBot() {
 
     activeSocket = sock;
     sock.ev.on('creds.update', saveCreds);
+
+    // Learn LID -> PN mappings from contact sync events so 1-on-1 replies always target PN
+    const ingestContacts = (contacts) => {
+      for (const c of contacts || []) {
+        if (c?.lid && c?.id) {
+          recordLidMapping(c.lid, c.id);
+        }
+        if (c?.id?.endsWith('@lid') && c?.phoneNumber) {
+          recordLidMapping(c.id, c.phoneNumber);
+        }
+      }
+    };
+    sock.ev.on('contacts.upsert', ingestContacts);
+    sock.ev.on('contacts.update', ingestContacts);
 
     sock.ev.on('connection.update', async (update) => {
       const { connection, lastDisconnect, qr } = update;
