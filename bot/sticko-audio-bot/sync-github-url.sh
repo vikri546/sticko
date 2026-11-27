@@ -67,6 +67,17 @@ fi
 
 CONFIG_FILE="../../audio_bot_server.json"
 
+# 4. Sinkronkan commit terbaru dari GitHub terlebih dahulu agar tidak bentrok (non-fast-forward)
+if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  if [ -z "$(git config user.name || true)" ]; then
+    git config user.name "Sticko Bot"
+  fi
+  if [ -z "$(git config user.email || true)" ]; then
+    git config user.email "bot@sticko.app"
+  fi
+  git pull --rebase --autostash -X ours origin main >/dev/null 2>&1 || true
+fi
+
 node -e "
   const fs = require('node:fs');
   const payload = {
@@ -83,20 +94,14 @@ if [ -n "$BOT_NUMBER" ]; then
   echo "   🤖 Nomor Bot  : $BOT_NUMBER"
 fi
 
-# 4. Commit & Push otomatis ke GitHub (set identitas git lokal jika Termux baru diinstal)
+# 5. Commit & Push otomatis ke GitHub
 if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-  if [ -z "$(git config user.name || true)" ]; then
-    git config user.name "Sticko Bot"
-  fi
-  if [ -z "$(git config user.email || true)" ]; then
-    git config user.email "bot@sticko.app"
-  fi
   git add "$CONFIG_FILE"
   if git diff --cached --quiet; then
     echo "ℹ️ URL di GitHub sudah paling baru ($PUBLIC_URL)."
   else
     git commit -m "chore: update audio bot server URL"
-    git push
+    git push origin main
     echo "🚀 Berhasil push ke GitHub! Semua pengguna APK Sticko otomatis terhubung."
   fi
 fi
