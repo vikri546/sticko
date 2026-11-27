@@ -1,4 +1,5 @@
 import http from 'node:http';
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -11,9 +12,9 @@ import makeWASocket, {
   downloadMediaMessage,
   fetchLatestBaileysVersion,
   generateMessageIDV2,
+  getMediaKeys,
   jidNormalizedUser,
   makeCacheableSignalKeyStore,
-  prepareWAMessageMedia,
   proto,
   useMultiFileAuthState,
 } from '@whiskeysockets/baileys';
@@ -286,15 +287,41 @@ async function cleanupDir(dirPath) {
   } catch (_) {}
 }
 
+async function probeAudioDurationSeconds(filePath, fallbackSeconds = 5) {
+  try {
+    const { stdout } = await execFileAsync('ffprobe', [
+      '-v',
+      'error',
+      '-show_entries',
+      'format=duration',
+      '-of',
+      'default=noprint_wrappers=1:nokey=1',
+      filePath,
+    ]);
+    const parsed = parseFloat(String(stdout || '').trim());
+    if (Number.isFinite(parsed) && parsed > 0) {
+      return Math.min(Math.max(Math.ceil(parsed), 1), 10);
+    }
+  } catch (_) {}
+  return Math.min(Math.max(Math.ceil(fallbackSeconds), 1), 10);
+}
+
 async function convertToOpusBuffer(inputPath, workDir, maxSeconds = 10) {
-  const outPath = path.join(workDir, `sound_${Date.now()}.ogg`);
+  const outPath = path.join(workDir, `sound_${Date.now()}_${Math.floor(Math.random() * 10000)}.ogg`);
+  const clampedMax = String(Math.min(Math.max(maxSeconds, 1), 10));
   await execFileAsync('ffmpeg', [
     '-y',
     '-i',
     inputPath,
     '-vn',
+    '-map',
+    '0:a:0',
+    '-map_metadata',
+    '-1',
     '-t',
-    String(Math.min(Math.max(maxSeconds, 1), 10)),
+    clampedMax,
+    '-af',
+    'aresample=async=1:first_pts=0',
     '-c:a',
     'libopus',
     '-ac',
@@ -303,13 +330,29 @@ async function convertToOpusBuffer(inputPath, workDir, maxSeconds = 10) {
     '48000',
     '-b:a',
     '32k',
-    '-application',
-    'voip',
+    '-vbr',
+    'on',
+    '-page_duration',
+    '20000',
     '-avoid_negative_ts',
     'make_zero',
+    '-f',
+    'ogg',
     outPath,
   ]);
-  return fs.promises.readFile(outPath);
+  const buf = await fs.promises.readFile(outPath);
+  // Verify valid OggS container header ('OggS' = 0x4F 0x67 0x67 0x53) & non-empty payload
+  if (
+    buf.byteLength < 120 ||
+    buf[0] !== 0x4f ||
+    buf[1] !== 0x67 ||
+    buf[2] !== 0x67 ||
+    buf[3] !== 0x53
+  ) {
+    throw new Error('Hasil konversi audio Ogg Opus kosong atau tidak valid.');
+  }
+  const actualSeconds = await probeAudioDurationSeconds(outPath, maxSeconds);
+  return { opusBuffer: buf, actualSeconds };
 }
 
 async function convertVideoToAnimatedWebpBuffer(inputPath, workDir) {
@@ -374,46 +417,126 @@ async function convertVideoToAnimatedWebpBuffer(inputPath, workDir) {
   return fs.promises.readFile(fallbackPath);
 }
 
+// In-memory AES-256-CBC + 10-byte HMAC-SHA256 encryption & atomic file write BEFORE upload.
+// Fixes a critical bug in Baileys 6.7.x `encryptedStream` (`messages-media.js:346-347`) where
+// `encFileWriteStream.end()` is NOT awaited before `createReadStream(encFilePath)` uploads to
+// `mmg.whatsapp.net` — causing truncated audio uploads on Android Termux flash storage and
+// triggering WhatsApp's "Tidak bisa memutar suara stiker" HMAC/decryption failure!
+async function encryptMediaBufferForWhatsApp(plainBuffer, mediaType) {
+  const mediaKey = crypto.randomBytes(32);
+  const { cipherKey, iv, macKey } = await getMediaKeys(mediaKey, mediaType);
+
+  const aes = crypto.createCipheriv('aes-256-cbc', cipherKey, iv);
+  const encBody = Buffer.concat([aes.update(plainBuffer), aes.final()]);
+
+  const mac = crypto
+    .createHmac('sha256', macKey)
+    .update(iv)
+    .update(encBody)
+    .digest()
+    .subarray(0, 10);
+
+  const fullEncBuffer = Buffer.concat([encBody, mac]);
+  const fileSha256 = crypto.createHash('sha256').update(plainBuffer).digest();
+  const fileEncSha256 = crypto.createHash('sha256').update(fullEncBuffer).digest();
+
+  return {
+    mediaKey,
+    fullEncBuffer,
+    fileSha256,
+    fileEncSha256,
+    fileLength: plainBuffer.byteLength,
+  };
+}
+
+async function uploadEncryptedMediaAtomic(sock, plainBuffer, mediaType) {
+  const encrypted = await encryptMediaBufferForWhatsApp(plainBuffer, mediaType);
+  const workDir = await createTempWorkDir();
+  const encFilePath = path.join(workDir, `${mediaType}_${Date.now()}.enc`);
+
+  try {
+    // Write atomically & fsync so Termux flash storage guarantees 100% of bytes (including 10B MAC)
+    const fh = await fs.promises.open(encFilePath, 'w');
+    try {
+      await fh.writeFile(encrypted.fullEncBuffer);
+      await fh.sync();
+    } finally {
+      await fh.close();
+    }
+
+    const stat = await fs.promises.stat(encFilePath);
+    if (stat.size !== encrypted.fullEncBuffer.byteLength) {
+      throw new Error(
+        `Ukuran file enkripsi ${mediaType} tidak utuh (${stat.size}/${encrypted.fullEncBuffer.byteLength}).`,
+      );
+    }
+
+    const fileEncSha256B64 = encrypted.fileEncSha256.toString('base64');
+    const uploaded = await sock.waUploadToServer(encFilePath, {
+      mediaType,
+      fileEncSha256B64,
+      timeoutMs: 45_000,
+    });
+
+    const directPath = uploaded?.directPath || uploaded?.direct_path || '';
+    const mediaUrl =
+      uploaded?.mediaUrl ||
+      uploaded?.url ||
+      (directPath ? `https://mmg.whatsapp.net${directPath}` : '');
+
+    if (!directPath && !mediaUrl) {
+      throw new Error(`Upload media ${mediaType} ke server WhatsApp tidak mengembalikan URL.`);
+    }
+
+    return {
+      url: mediaUrl,
+      directPath,
+      mediaKey: encrypted.mediaKey,
+      fileEncSha256: encrypted.fileEncSha256,
+      fileSha256: encrypted.fileSha256,
+      fileLength: encrypted.fileLength,
+      mediaKeyTimestamp: Math.floor(Date.now() / 1000),
+    };
+  } finally {
+    await cleanupDir(workDir);
+  }
+}
+
 async function sendSoundStickerMessage(sock, jid, {
   webpBuffer,
   opusBuffer,
   durationSeconds = 5,
   useEnvelope = false,
 }) {
-  const [stickerMedia, audioMedia] = await Promise.all([
-    prepareWAMessageMedia(
-      { sticker: webpBuffer, isAnimated: true },
-      { upload: sock.waUploadToServer },
-    ),
-    prepareWAMessageMedia(
-      {
-        audio: opusBuffer,
-        mimetype: 'audio/ogg; codecs=opus',
-        ptt: false,
-        seconds: Math.min(Math.max(Math.ceil(durationSeconds), 1), 10),
-      },
-      { upload: sock.waUploadToServer },
-    ),
-  ]);
+  // Upload sequentially so `refreshMediaConn` & Termux disk/network streams never race
+  const stickerUpload = await uploadEncryptedMediaAtomic(sock, webpBuffer, 'sticker');
+  const audioUpload = await uploadEncryptedMediaAtomic(sock, opusBuffer, 'audio');
 
-  if (!stickerMedia?.stickerMessage || !audioMedia?.audioMessage) {
-    throw new Error('Gagal mengunggah media stiker atau audio ke server WhatsApp.');
-  }
+  const safeSeconds = Math.min(Math.max(Math.ceil(durationSeconds), 1), 10);
 
-  const stickerMsg = {
-    ...stickerMedia.stickerMessage,
+  const stickerProto = proto.Message.StickerMessage.fromObject({
+    ...stickerUpload,
+    mimetype: 'image/webp',
     isAnimated: true,
     width: 512,
     height: 512,
-  };
-  Object.defineProperty(stickerMsg, SOUND_AUDIO_SYM, {
-    value: audioMedia.audioMessage,
+  });
+
+  const audioProto = proto.Message.AudioMessage.fromObject({
+    ...audioUpload,
+    mimetype: 'audio/ogg; codecs=opus',
+    ptt: false,
+    seconds: safeSeconds,
+  });
+
+  Object.defineProperty(stickerProto, SOUND_AUDIO_SYM, {
+    value: audioProto,
     enumerable: false,
   });
 
-  const messagePayload = { stickerMessage: stickerMsg };
+  const messagePayload = { stickerMessage: stickerProto };
   if (useEnvelope) {
-    Object.defineProperty(stickerMsg, USE_ENVELOPE_SYM, {
+    Object.defineProperty(stickerProto, USE_ENVELOPE_SYM, {
       value: true,
       enumerable: false,
     });
@@ -426,6 +549,10 @@ async function sendSoundStickerMessage(sock, jid, {
   const msgId = typeof generateMessageIDV2 === 'function'
     ? generateMessageIDV2(sock.user?.id)
     : `STK${Date.now()}${Math.floor(Math.random() * 10000)}`;
+
+  console.log(
+    `🎵 Media stiker audio terunggah utuh (webp=${webpBuffer.byteLength}B, opus=${opusBuffer.byteLength}B, durasi=${safeSeconds}s)`,
+  );
 
   // Cache payload BEFORE relaying so Baileys `getMessage` can resend on E2EE retry receipt
   rememberSentMessage(jid, msgId, messagePayload);
@@ -530,7 +657,7 @@ async function handleIncomingChatMessage(sock, msg) {
     const inputVideoPath = path.join(workDir, 'chat_input.mp4');
     await fs.promises.writeFile(inputVideoPath, videoBuffer);
 
-    const [webpBuffer, opusBuffer] = await Promise.all([
+    const [webpBuffer, { opusBuffer, actualSeconds }] = await Promise.all([
       convertVideoToAnimatedWebpBuffer(inputVideoPath, workDir),
       convertToOpusBuffer(inputVideoPath, workDir, seconds > 0 ? seconds : 10),
     ]);
@@ -538,7 +665,7 @@ async function handleIncomingChatMessage(sock, msg) {
     await sendSoundStickerMessage(sock, remoteJid, {
       webpBuffer,
       opusBuffer,
-      durationSeconds: seconds > 0 ? seconds : 5,
+      durationSeconds: actualSeconds,
     });
     console.log(`🔊 Stiker audio dari chat video terkirim ke ${remoteJid.split('@')[0]}`);
   } catch (err) {
@@ -819,12 +946,16 @@ const server = http.createServer(async (req, res) => {
           workDir = await createTempWorkDir();
           const audioInPath = path.join(workDir, `in_${i}.${ext}`);
           await fs.promises.writeFile(audioInPath, rawAudioBuffer);
-          const opusBuffer = await convertToOpusBuffer(audioInPath, workDir, durationSec);
+          const { opusBuffer, actualSeconds } = await convertToOpusBuffer(
+            audioInPath,
+            workDir,
+            durationSec,
+          );
 
           await sendSoundStickerMessage(activeSocket, targetJid, {
             webpBuffer,
             opusBuffer,
-            durationSeconds: durationSec,
+            durationSeconds: actualSeconds,
             useEnvelope,
           });
           sentCount++;
