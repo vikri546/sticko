@@ -10,7 +10,7 @@ Gunakan aplikasi **Termux versi F-Droid / GitHub** (bukan versi lawas Play Store
 
 ```bash
 pkg update && pkg upgrade -y
-pkg install nodejs-lts ffmpeg git cloudflared -y
+pkg install nodejs-lts ffmpeg git cloudflared resolv-conf -y
 git clone https://github.com/vikri546/sticko.git
 cd sticko/bot/sticko-audio-bot
 npm install
@@ -35,7 +35,7 @@ Setiap kali `start-termux.sh` mencetak `🌍 URL PUBLIK BOT: https://xxxx.tryclo
 
 ```bash
 cd ~/sticko/bot/sticko-audio-bot
-bash sync-github-url.sh https://xxxx.trycloudflare.com 628xxxxxxxxxx
+bash sync-github-url.sh
 ```
 
 Skrip tersebut memperbarui file `audio_bot_server.json` di GitHub Anda sehingga **semua pengguna APK Sticko otomatis tersambung ke bot Termux Anda** hanya dengan mengisi nomor WA mereka sendiri (tanpa perlu mengisi IP/URL server).
