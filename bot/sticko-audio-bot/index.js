@@ -11,10 +11,49 @@ import makeWASocket, {
   downloadMediaMessage,
   fetchLatestBaileysVersion,
   generateMessageIDV2,
+  jidNormalizedUser,
+  makeCacheableSignalKeyStore,
   prepareWAMessageMedia,
   proto,
   useMultiFileAuthState,
 } from '@whiskeysockets/baileys';
+
+// Suppress noisy internal Signal Protocol ratchet rotation dumps from `libsignal`
+// (which write directly to global console.info/warn, bypassing pino's silent logger).
+// Real errors (Bad MAC, Failed to decrypt, Session error, etc.) remain visible.
+if (process.env.DEBUG_SIGNAL !== '1') {
+  const LIBSIGNAL_NOISE_PATTERNS = [
+    'Closing session:',
+    'Closing open session',
+    'Closing stale open session',
+    'Opening session:',
+    'Removing old closed session:',
+    'Decrypted message with closed session.',
+    'Session already closed',
+    'Session already open',
+    'Migrating session to:',
+  ];
+  const isLibsignalNoise = (firstArg) =>
+    typeof firstArg === 'string' &&
+    LIBSIGNAL_NOISE_PATTERNS.some((prefix) => firstArg.includes(prefix));
+
+  const origInfo = console.info.bind(console);
+  const origWarn = console.warn.bind(console);
+  const origLog = console.log.bind(console);
+
+  console.info = (...args) => {
+    if (isLibsignalNoise(args[0])) return;
+    origInfo(...args);
+  };
+  console.warn = (...args) => {
+    if (isLibsignalNoise(args[0])) return;
+    origWarn(...args);
+  };
+  console.log = (...args) => {
+    if (isLibsignalNoise(args[0])) return;
+    origLog(...args);
+  };
+}
 
 const execFileAsync = promisify(execFile);
 
@@ -50,7 +89,7 @@ function ensureSoundStickerProtoPatch() {
 
   const origMessageEncode = proto.Message.encode.bind(proto.Message);
   proto.Message.encode = function patchedMessageEncode(message, writer) {
-    if (message?.[USE_ENVELOPE_SYM] && message.stickerMessage) {
+    if ((message?.[USE_ENVELOPE_SYM] || message?.stickerMessage?.[USE_ENVELOPE_SYM]) && message.stickerMessage) {
       const innerMsg = { stickerMessage: message.stickerMessage };
       const rest = { ...message };
       delete rest.stickerMessage;
@@ -66,9 +105,77 @@ function ensureSoundStickerProtoPatch() {
 
 ensureSoundStickerProtoPatch();
 
+// Lightweight TTL CacheStore compatible with Baileys `msgRetryCounterCache` (zero extra deps)
+function createMemoryCacheStore(ttlMs = 10 * 60 * 1000, maxEntries = 500) {
+  const map = new Map();
+  return {
+    get(key) {
+      const entry = map.get(key);
+      if (!entry) return undefined;
+      if (Date.now() > entry.expiresAt) {
+        map.delete(key);
+        return undefined;
+      }
+      return entry.value;
+    },
+    set(key, value) {
+      if (map.size >= maxEntries) {
+        const oldestKey = map.keys().next().value;
+        if (oldestKey !== undefined) map.delete(oldestKey);
+      }
+      map.set(key, { value, expiresAt: Date.now() + ttlMs });
+    },
+    del(key) {
+      map.delete(key);
+    },
+    flushAll() {
+      map.clear();
+    },
+  };
+}
+
+// Keep retry counters & recently sent messages outside socket lifecycle so Baileys can cleanly
+// fulfill E2EE retry receipts ("Waiting for this message" fix) across session rotations & reconnects.
+const msgRetryCounterCache = createMemoryCacheStore(15 * 60 * 1000, 1000);
+const sentMessageStore = new Map();
+const sentMessageById = new Map();
+const MAX_STORED_MESSAGES = 250;
+
+function rememberSentMessage(jid, id, message) {
+  if (!id || !message) return;
+  const normJid = jid ? jidNormalizedUser(jid) : '';
+  const compositeKey = `${normJid}:${id}`;
+  if (sentMessageStore.size >= MAX_STORED_MESSAGES) {
+    const oldestKey = sentMessageStore.keys().next().value;
+    if (oldestKey !== undefined) sentMessageStore.delete(oldestKey);
+  }
+  if (sentMessageById.size >= MAX_STORED_MESSAGES) {
+    const oldestId = sentMessageById.keys().next().value;
+    if (oldestId !== undefined) sentMessageById.delete(oldestId);
+  }
+  sentMessageStore.set(compositeKey, message);
+  sentMessageById.set(id, message);
+}
+
+function getStoredMessage(key) {
+  if (!key?.id) return undefined;
+  const normJid = key.remoteJid ? jidNormalizedUser(key.remoteJid) : '';
+  return sentMessageStore.get(`${normJid}:${key.id}`) || sentMessageById.get(key.id);
+}
+
+async function sendTrackedText(sock, jid, text) {
+  const sent = await sock.sendMessage(jid, { text });
+  if (sent?.key?.id && sent.message) {
+    rememberSentMessage(sent.key.remoteJid || jid, sent.key.id, sent.message);
+  }
+  return sent;
+}
+
 const logger = pino({ level: process.env.LOG_LEVEL || 'silent' });
 let activeSocket = null;
 let isWaConnected = false;
+let isStartingSocket = false;
+let reconnectTimer = null;
 let connectedBotNumber = null;
 let cachedPairingPhone = normalizePhoneDigits(process.env.PAIRING_PHONE || '');
 let pairingRequestedForCurrentSocket = false;
@@ -276,6 +383,10 @@ async function sendSoundStickerMessage(sock, jid, {
 
   const messagePayload = { stickerMessage: stickerMsg };
   if (useEnvelope) {
+    Object.defineProperty(stickerMsg, USE_ENVELOPE_SYM, {
+      value: true,
+      enumerable: false,
+    });
     Object.defineProperty(messagePayload, USE_ENVELOPE_SYM, {
       value: true,
       enumerable: false,
@@ -284,17 +395,32 @@ async function sendSoundStickerMessage(sock, jid, {
 
   const msgId = typeof generateMessageIDV2 === 'function'
     ? generateMessageIDV2(sock.user?.id)
-    : undefined;
+    : `STK${Date.now()}${Math.floor(Math.random() * 10000)}`;
 
-  await sock.relayMessage(jid, messagePayload, msgId ? { messageId: msgId } : {});
+  // Cache payload BEFORE relaying so Baileys `getMessage` can resend on E2EE retry receipt
+  rememberSentMessage(jid, msgId, messagePayload);
+  await sock.relayMessage(jid, messagePayload, { messageId: msgId });
+}
+
+function resolveReplyJid(msg) {
+  const remoteJid = msg?.key?.remoteJid || '';
+  if (remoteJid.endsWith('@lid')) {
+    const alt = msg?.key?.remoteJidAlt || msg?.key?.senderPn || '';
+    if (typeof alt === 'string' && alt.endsWith('@s.whatsapp.net')) {
+      return alt;
+    }
+  }
+  return remoteJid;
 }
 
 async function handleIncomingChatMessage(sock, msg) {
   if (!msg?.message || msg.key.fromMe) return;
-  const remoteJid = msg.key.remoteJid;
-  if (!remoteJid || remoteJid === 'status@broadcast') return;
+  const rawRemoteJid = msg.key.remoteJid;
+  if (!rawRemoteJid || rawRemoteJid === 'status@broadcast') return;
 
-  const isDirectChat = remoteJid.endsWith('@s.whatsapp.net');
+  const remoteJid = resolveReplyJid(msg);
+  const isDirectChat =
+    rawRemoteJid.endsWith('@s.whatsapp.net') || rawRemoteJid.endsWith('@lid');
   const text = (
     msg.message.conversation ||
     msg.message.extendedTextMessage?.text ||
@@ -304,11 +430,13 @@ async function handleIncomingChatMessage(sock, msg) {
   const lower = text.toLowerCase();
 
   if (lower === '!ping' || lower === '!menu' || lower === '!sticko' || lower === 'halo') {
-    await sock.sendMessage(remoteJid, {
-      text:
-        '🔊 *Sticko Audio Sticker Bot Aktif!*\n\n' +
+    await sendTrackedText(
+      sock,
+      remoteJid,
+      '🔊 *Sticko Audio Sticker Bot Aktif!*\n\n' +
         'Nomor Anda sudah terhubung dengan bot. Sekarang Anda bisa kembali ke aplikasi *Sticko* dan ketuk *Kirim Stiker Bersuara via Bot WA*, atau kirim video (<= 10s) langsung di chat ini dengan caption *!sa*.',
-    });
+    );
+    console.log(`💬 Membalas sapaan (${lower}) ke ${remoteJid.split('@')[0]}`);
     return;
   }
 
@@ -330,9 +458,11 @@ async function handleIncomingChatMessage(sock, msg) {
   const videoInfo = targetMediaMsg.message.videoMessage;
   const seconds = Number(videoInfo?.seconds || 0);
   if (seconds > 11) {
-    await sock.sendMessage(remoteJid, {
-      text: `⚠️ Durasi video (${seconds} detik) melebihi batas maksimal 10 detik.`,
-    });
+    await sendTrackedText(
+      sock,
+      remoteJid,
+      `⚠️ Durasi video (${seconds} detik) melebihi batas maksimal 10 detik.`,
+    );
     return;
   }
 
@@ -358,87 +488,130 @@ async function handleIncomingChatMessage(sock, msg) {
       opusBuffer,
       durationSeconds: seconds > 0 ? seconds : 5,
     });
+    console.log(`🔊 Stiker audio dari chat video terkirim ke ${remoteJid.split('@')[0]}`);
   } catch (err) {
     console.error('[ChatVideoError]', err);
-    await sock.sendMessage(remoteJid, {
-      text: '❌ Gagal memproses video menjadi stiker audio. Pastikan video <= 10 detik dan memiliki suara.',
-    });
+    await sendTrackedText(
+      sock,
+      remoteJid,
+      '❌ Gagal memproses video menjadi stiker audio. Pastikan video <= 10 detik dan memiliki suara.',
+    );
   } finally {
     await cleanupDir(workDir);
   }
 }
 
 async function startWhatsAppBot() {
-  const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
-  const { version } = await fetchLatestBaileysVersion();
-
-  // If not registered yet, ask for the Bot's WhatsApp phone number BEFORE opening socket
-  // so Pairing Code (NO QR!) can be requested cleanly as soon as socket initializes.
-  if (!state.creds.registered) {
-    await resolvePairingPhoneInteractive();
+  if (isStartingSocket) return;
+  isStartingSocket = true;
+  if (reconnectTimer) {
+    clearTimeout(reconnectTimer);
+    reconnectTimer = null;
   }
 
-  pairingRequestedForCurrentSocket = false;
+  try {
+    // Clean up previous socket listeners before creating a new socket so two instances
+    // never race on Signal keys inside auth_session/.
+    if (activeSocket) {
+      try {
+        activeSocket.ev.removeAllListeners();
+        activeSocket.end(undefined);
+      } catch (_) {}
+      activeSocket = null;
+    }
 
-  // IMPORTANT: ['Ubuntu', 'Chrome', '20.0.04'] is required by WhatsApp multi-device
-  // so 8-digit Pairing Code notifications work reliably on Android without QR scan.
-  const sock = makeWASocket({
-    version,
-    logger,
-    auth: state,
-    printQRInTerminal: false,
-    browser: ['Ubuntu', 'Chrome', '20.0.04'],
-    markOnlineOnConnect: false,
-  });
+    const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
+    const { version } = await fetchLatestBaileysVersion();
 
-  activeSocket = sock;
-  sock.ev.on('creds.update', saveCreds);
+    // If not registered yet, ask for the Bot's WhatsApp phone number BEFORE opening socket
+    // so Pairing Code (NO QR!) can be requested cleanly as soon as socket initializes.
+    if (!state.creds.registered) {
+      await resolvePairingPhoneInteractive();
+    }
 
-  sock.ev.on('connection.update', async (update) => {
-    const { connection, lastDisconnect, qr } = update;
+    pairingRequestedForCurrentSocket = false;
 
-    // Pairing Code Mode ONLY (never prints QR; uses `qr` event trigger as readiness signal for requestPairingCode)
-    if ((qr || connection === 'connecting') && !sock.authState.creds.registered && !pairingRequestedForCurrentSocket) {
-      if (qr && cachedPairingPhone) {
-        pairingRequestedForCurrentSocket = true;
-        try {
-          const rawCode = await sock.requestPairingCode(cachedPairingPhone);
-          const formattedCode = rawCode?.match(/.{1,4}/g)?.join('-') || rawCode;
-          console.log('\n╔════════════════════════════════════════════════════╗');
-          console.log(`║  🔑 KODE PAIRING WA (${cachedPairingPhone}): ${formattedCode}  `);
-          console.log('╚════════════════════════════════════════════════════╝');
-          console.log('👉 Buka WhatsApp Nomor Bot -> Perangkat Tertaut -> Tautkan Perangkat');
-          console.log('👉 Ketuk "Tautkan dengan nomor telepon saja" lalu masukkan kode 8 digit di atas!\n');
-        } catch (err) {
-          pairingRequestedForCurrentSocket = false;
-          console.error('⚠️ Gagal meminta Pairing Code, mencoba ulang...:', err.message);
+    // IMPORTANT:
+    // - `makeCacheableSignalKeyStore` prevents Termux flash I/O races on Signal ratchet keys
+    // - `msgRetryCounterCache` + `getMessage` resolve E2EE retries ("Waiting for this message")
+    // - `syncFullHistory: false` prevents old history floods from resetting active sessions
+    // - `browser: ['Ubuntu', 'Chrome', '20.0.04']` keeps 8-digit Pairing Code reliable
+    const sock = makeWASocket({
+      version,
+      logger,
+      auth: {
+        creds: state.creds,
+        keys: makeCacheableSignalKeyStore(state.keys, logger),
+      },
+      printQRInTerminal: false,
+      browser: ['Ubuntu', 'Chrome', '20.0.04'],
+      markOnlineOnConnect: false,
+      syncFullHistory: false,
+      shouldSyncHistoryMessage: () => false,
+      msgRetryCounterCache,
+      getMessage: async (key) => getStoredMessage(key),
+    });
+
+    activeSocket = sock;
+    sock.ev.on('creds.update', saveCreds);
+
+    sock.ev.on('connection.update', async (update) => {
+      const { connection, lastDisconnect, qr } = update;
+
+      // Pairing Code Mode ONLY (never prints QR; uses `qr` event trigger as readiness signal for requestPairingCode)
+      if ((qr || connection === 'connecting') && !sock.authState.creds.registered && !pairingRequestedForCurrentSocket) {
+        if (qr && cachedPairingPhone) {
+          pairingRequestedForCurrentSocket = true;
+          try {
+            const rawCode = await sock.requestPairingCode(cachedPairingPhone);
+            const formattedCode = rawCode?.match(/.{1,4}/g)?.join('-') || rawCode;
+            console.log('\n╔════════════════════════════════════════════════════╗');
+            console.log(`║  🔑 KODE PAIRING WA (${cachedPairingPhone}): ${formattedCode}  `);
+            console.log('╚════════════════════════════════════════════════════╝');
+            console.log('👉 Buka WhatsApp Nomor Bot -> Perangkat Tertaut -> Tautkan Perangkat');
+            console.log('👉 Ketuk "Tautkan dengan nomor telepon saja" lalu masukkan kode 8 digit di atas!\n');
+          } catch (err) {
+            pairingRequestedForCurrentSocket = false;
+            console.error('⚠️ Gagal meminta Pairing Code, mencoba ulang...:', err.message);
+          }
         }
       }
-    }
 
-    if (connection === 'open') {
-      isWaConnected = true;
-      connectedBotNumber = sock.user?.id?.split(':')[0]?.split('@')[0] || cachedPairingPhone || null;
-      console.log(`\n✅ Sticko Audio Bot TERHUBUNG ke WhatsApp (Nomor Bot: ${connectedBotNumber || 'aktif'})\n`);
-    } else if (connection === 'close') {
-      isWaConnected = false;
-      const statusCode = lastDisconnect?.error?.output?.statusCode;
-      const loggedOut = statusCode === DisconnectReason.loggedOut;
-      console.log(`⚠️ Koneksi WhatsApp terputus (kode: ${statusCode}).`);
-      if (loggedOut) {
-        console.log('ℹ️ Sesi logout. Jalankan `npm run reset-auth` lalu `npm start` untuk Pairing Code baru.');
-      } else {
-        setTimeout(startWhatsAppBot, 3000);
+      if (connection === 'open') {
+        isWaConnected = true;
+        connectedBotNumber = sock.user?.id?.split(':')[0]?.split('@')[0] || cachedPairingPhone || null;
+        console.log(`\n✅ Sticko Audio Bot TERHUBUNG ke WhatsApp (Nomor Bot: ${connectedBotNumber || 'aktif'})\n`);
+      } else if (connection === 'close') {
+        isWaConnected = false;
+        const statusCode = lastDisconnect?.error?.output?.statusCode;
+        const loggedOut = statusCode === DisconnectReason.loggedOut;
+        console.log(`⚠️ Koneksi WhatsApp terputus (kode: ${statusCode}).`);
+        if (loggedOut) {
+          console.log('ℹ️ Sesi logout. Jalankan `npm run reset-auth` lalu `bash start-termux.sh` untuk Pairing Code baru.');
+        } else if (!reconnectTimer) {
+          reconnectTimer = setTimeout(() => {
+            reconnectTimer = null;
+            startWhatsAppBot().catch((err) => {
+              console.error('Gagal menyambungkan ulang bot WhatsApp:', err);
+            });
+          }, 3000);
+        }
       }
-    }
-  });
+    });
 
-  sock.ev.on('messages.upsert', async ({ messages, type }) => {
-    if (type !== 'notify') return;
-    for (const msg of messages) {
-      await handleIncomingChatMessage(sock, msg);
-    }
-  });
+    sock.ev.on('messages.upsert', async ({ messages, type }) => {
+      if (type !== 'notify') return;
+      for (const msg of messages) {
+        try {
+          await handleIncomingChatMessage(sock, msg);
+        } catch (err) {
+          console.error('[IncomingMsgError]', err?.message || err);
+        }
+      }
+    });
+  } finally {
+    isStartingSocket = false;
+  }
 }
 
 function readJsonBody(req) {
@@ -516,14 +689,30 @@ const server = http.createServer(async (req, res) => {
         return;
       }
 
-      const targetJid = normalizePhoneToJid(body.targetPhone);
-      if (!targetJid) {
+      const rawTargetJid = normalizePhoneToJid(body.targetPhone);
+      if (!rawTargetJid) {
         sendJson(res, 400, {
           ok: false,
           message: 'Nomor WhatsApp tujuan tidak valid (gunakan format 08xxx atau 628xxx).',
         });
         return;
       }
+
+      // Resolve canonical WhatsApp JID via onWhatsApp (prevents invalid-JID session failures)
+      let targetJid = rawTargetJid;
+      try {
+        const [waCheck] = await activeSocket.onWhatsApp(rawTargetJid);
+        if (waCheck && waCheck.exists === false) {
+          sendJson(res, 400, {
+            ok: false,
+            message: 'Nomor WhatsApp penerima tidak terdaftar di WhatsApp.',
+          });
+          return;
+        }
+        if (waCheck?.jid) {
+          targetJid = waCheck.jid;
+        }
+      } catch (_) {}
 
       if (!checkRateLimit(targetJid)) {
         sendJson(res, 429, {
@@ -586,6 +775,7 @@ const server = http.createServer(async (req, res) => {
         return;
       }
 
+      console.log(`✅ Terkirim ${sentCount} stiker audio ke ${targetJid.split('@')[0]}`);
       sendJson(res, 200, {
         ok: true,
         sentCount,
