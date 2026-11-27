@@ -49,3 +49,10 @@ assets/config/social_links.json
 *.private.json
 *.private.dart
 
+# Sticko Audio Bot runtime & WhatsApp session credentials
+bot/sticko-audio-bot/node_modules/
+bot/sticko-audio-bot/auth_session/
+bot/sticko-audio-bot/.public_url.txt
+bot/sticko-audio-bot/.cloudflared.log
+
+
