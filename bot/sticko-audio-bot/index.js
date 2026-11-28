@@ -54,6 +54,22 @@ if (process.env.DEBUG_SIGNAL !== '1') {
     if (isLibsignalNoise(args[0])) return;
     origLog(...args);
   };
+
+  // libsignal dumps full stack traces via console.error on every "Bad MAC" decrypt failure.
+  // Baileys already recovers via retry receipts, and the bot auto-heals the session below,
+  // so these dumps are hidden (a one-line notice is printed by healBrokenSession instead).
+  const origError = console.error.bind(console);
+  console.error = (...args) => {
+    const first = args[0];
+    if (
+      typeof first === 'string' &&
+      (first.startsWith('Failed to decrypt message with any known session') ||
+        first.startsWith('Session error:'))
+    ) {
+      return;
+    }
+    origError(...args);
+  };
 }
 
 const execFileAsync = promisify(execFile);
@@ -559,6 +575,53 @@ async function sendSoundStickerMessage(sock, jid, {
   await sock.relayMessage(jid, messagePayload, { messageId: msgId });
 }
 
+// Auto-heal "Bad MAC" / "No matching sessions": when a contact's Signal session is out of sync
+// (common after LID<->PN switches or session cleanup), delete ONLY that contact's session files.
+// Baileys' next retry receipt then carries our prekeys, so the sender rebuilds a fresh session (pkmsg).
+const decryptFailures = new Map();
+const lastHealAt = new Map();
+
+async function healBrokenSession(sock, msg) {
+  const reason = String(msg?.messageStubParameters?.[0] || '');
+  if (!/Bad MAC|No matching sessions|No session/i.test(reason)) return;
+
+  const key = msg.key || {};
+  const users = new Set(
+    [key.remoteJid, key.participant, key.senderPn, key.senderLid, key.participantPn, key.participantLid]
+      .filter((j) => typeof j === 'string' && j.includes('@') && !j.endsWith('@g.us'))
+      .map((j) => j.split('@')[0].split(':')[0])
+      .filter(Boolean),
+  );
+  if (users.size === 0) return;
+
+  const mainUser = [...users][0];
+  const now = Date.now();
+  const recent = (decryptFailures.get(mainUser) || []).filter((t) => now - t < 5 * 60_000);
+  recent.push(now);
+  decryptFailures.set(mainUser, recent);
+
+  // Heal on the 2nd failure within 5 minutes, at most once every 2 minutes per contact
+  if (recent.length < 2 || now - (lastHealAt.get(mainUser) || 0) < 2 * 60_000) {
+    console.log(`⚠️ Pesan dari ${mainUser} gagal didekripsi (${reason}). Bot otomatis meminta kirim ulang...`);
+    return;
+  }
+  lastHealAt.set(mainUser, now);
+  decryptFailures.delete(mainUser);
+
+  const files = await fs.promises.readdir(AUTH_DIR).catch(() => []);
+  const sessionIds = files
+    .filter((f) => f.startsWith('session-') && f.endsWith('.json'))
+    .map((f) => f.slice('session-'.length, -'.json'.length))
+    .filter((id) => users.has(id.split('.')[0]));
+  if (sessionIds.length === 0) return;
+
+  // keys.set(null) deletes the file AND invalidates makeCacheableSignalKeyStore's memory cache
+  await sock.authState.keys.set({
+    session: Object.fromEntries(sessionIds.map((id) => [id, null])),
+  });
+  console.log(`🩹 Sesi enkripsi ${mainUser} direset (${sessionIds.length} file). Pesan berikutnya akan tersambung normal.`);
+}
+
 function resolveReplyJid(msg) {
   const key = msg?.key || {};
   const remoteJid = key.remoteJid || '';
@@ -793,6 +856,11 @@ async function startWhatsAppBot() {
     });
 
     sock.ev.on('messages.upsert', async ({ messages, type }) => {
+      for (const msg of messages) {
+        if (msg?.messageStubType === proto.WebMessageInfo.StubType.CIPHERTEXT) {
+          await healBrokenSession(sock, msg).catch(() => {});
+        }
+      }
       if (type !== 'notify') return;
       for (const msg of messages) {
         try {
