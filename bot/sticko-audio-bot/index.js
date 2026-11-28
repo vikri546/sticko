@@ -13,6 +13,7 @@ import makeWASocket, {
   fetchLatestBaileysVersion,
   generateMessageIDV2,
   getMediaKeys,
+  jidDecode,
   jidNormalizedUser,
   makeCacheableSignalKeyStore,
   proto,
@@ -157,7 +158,25 @@ const msgRetryCounterCache = createMemoryCacheStore(15 * 60 * 1000, 1000);
 const sentMessageStore = new Map();
 const sentMessageById = new Map();
 const lidToPnMap = new Map();
+const pnToLidMap = new Map();
+const lidPreferredForPn = new Map();
+let lastRetryTimestamp = 0;
 const MAX_STORED_MESSAGES = 250;
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// Baileys 6.7.24 bug workaround (`messages-send.js:412`):
+// `authState.creds?.me?.lid.split(':')[0]` expects `me.lid` to contain `:device` (e.g. `236271033172081:1@lid`).
+// Without `:device`, `.split(':')[0]` keeps `@lid` and `jidEncode(..., 'lid')` produces corrupt `...@lid@lid`!
+function formatMeLidWithDevice(rawLid, meId) {
+  if (!rawLid || typeof rawLid !== 'string') return null;
+  const lidUser = rawLid.split('@')[0]?.split(':')[0]?.trim();
+  if (!lidUser) return null;
+  const myDevice = (meId && jidDecode(meId)?.device) || 1;
+  return `${lidUser}:${myDevice}@lid`;
+}
 
 function normalizeToPnJid(raw) {
   if (!raw || typeof raw !== 'string') return null;
@@ -176,7 +195,26 @@ function recordLidMapping(lid, pn) {
   const normPn = normalizeToPnJid(String(pn));
   if (normLid && normPn) {
     lidToPnMap.set(normLid, normPn);
+    pnToLidMap.set(normPn, normLid);
   }
+}
+
+async function purgeSessionsForUsers(userIds) {
+  if (!activeSocket?.authState?.keys || !userIds?.length) return;
+  const targetSet = new Set(userIds.filter(Boolean));
+  if (targetSet.size === 0) return;
+  try {
+    const files = await fs.promises.readdir(AUTH_DIR).catch(() => []);
+    const sessionIds = files
+      .filter((f) => f.startsWith('session-') && f.endsWith('.json'))
+      .map((f) => f.slice('session-'.length, -'.json'.length))
+      .filter((id) => targetSet.has(id.split('.')[0]));
+    if (sessionIds.length > 0) {
+      await activeSocket.authState.keys.set({
+        session: Object.fromEntries(sessionIds.map((id) => [id, null])),
+      });
+    }
+  } catch (_) {}
 }
 
 function rememberSentMessage(jid, id, message) {
@@ -197,10 +235,24 @@ function rememberSentMessage(jid, id, message) {
 
 function getStoredMessage(key) {
   if (!key?.id) return undefined;
+  lastRetryTimestamp = Date.now();
+  const rawSender = key.participant || key.remoteJid || '';
   const normJid = key.remoteJid ? jidNormalizedUser(key.remoteJid) : '';
   const found = sentMessageStore.get(`${normJid}:${key.id}`) || sentMessageById.get(key.id);
+
+  // If the recipient requested a retry from an @lid address, mark @lid as their active session
+  // and purge any stale paired @s.whatsapp.net session so subsequent sends don't keep failing Attempt #0.
+  if (normJid.endsWith('@lid')) {
+    const pairedPn = lidToPnMap.get(normJid);
+    if (pairedPn) {
+      lidPreferredForPn.set(pairedPn, normJid);
+      const pnUser = pairedPn.split('@')[0];
+      purgeSessionsForUsers([pnUser]).catch(() => {});
+    }
+  }
+
   console.log(
-    `🔁 Retry dekripsi WA diminta (id: ${key.id}) -> ${found ? 'pesan ditemukan & dikirim ulang ✅' : 'tidak ada di cache ⚠️'}`,
+    `🔁 Retry dekripsi WA diminta (id: ${key.id}, dari: ${rawSender.split('@')[0] || 'peer'}) -> ${found ? 'pesan ditemukan & dikirim ulang ✅' : 'tidak ada di cache ⚠️'}`,
   );
   return found;
 }
@@ -586,11 +638,26 @@ async function healBrokenSession(sock, msg) {
   if (!/Bad MAC|No matching sessions|No session/i.test(reason)) return;
 
   const key = msg.key || {};
+  const remoteJid = String(key.remoteJid || '');
+  // Ignore group chats, status broadcasts, and our own peer/self sync messages
+  if (!remoteJid || remoteJid === 'status@broadcast' || remoteJid.endsWith('@g.us') || key.fromMe) {
+    return;
+  }
+
+  const meUser = sock.authState?.creds?.me?.id?.split(':')[0]?.split('@')[0] || '';
+  const meLidUser = sock.authState?.creds?.me?.lid?.split(':')[0]?.split('@')[0] || '';
+
+  // If me.lid wasn't discovered yet and a self-peer LID message arrives (often 4x PDO burst on connect),
+  // skip healing it if it has no senderPn (prevents deleting the bot's own primary phone LID session!).
+  if (remoteJid.endsWith('@lid') && !key.senderPn && !lidToPnMap.has(jidNormalizedUser(remoteJid))) {
+    return;
+  }
+
   const users = new Set(
     [key.remoteJid, key.participant, key.senderPn, key.senderLid, key.participantPn, key.participantLid]
       .filter((j) => typeof j === 'string' && j.includes('@') && !j.endsWith('@g.us'))
       .map((j) => j.split('@')[0].split(':')[0])
-      .filter(Boolean),
+      .filter((u) => Boolean(u) && u !== meUser && u !== meLidUser),
   );
   if (users.size === 0) return;
 
@@ -600,9 +667,7 @@ async function healBrokenSession(sock, msg) {
   recent.push(now);
   decryptFailures.set(mainUser, recent);
 
-  // Heal on the 2nd failure within 5 minutes, at most once every 2 minutes per contact
   if (recent.length < 2 || now - (lastHealAt.get(mainUser) || 0) < 2 * 60_000) {
-    console.log(`⚠️ Pesan dari ${mainUser} gagal didekripsi (${reason}). Bot otomatis meminta kirim ulang...`);
     return;
   }
   lastHealAt.set(mainUser, now);
@@ -615,11 +680,10 @@ async function healBrokenSession(sock, msg) {
     .filter((id) => users.has(id.split('.')[0]));
   if (sessionIds.length === 0) return;
 
-  // keys.set(null) deletes the file AND invalidates makeCacheableSignalKeyStore's memory cache
   await sock.authState.keys.set({
     session: Object.fromEntries(sessionIds.map((id) => [id, null])),
   });
-  console.log(`🩹 Sesi enkripsi ${mainUser} direset (${sessionIds.length} file). Pesan berikutnya akan tersambung normal.`);
+  console.log(`🩹 Sesi enkripsi kontak ${mainUser} direset (${sessionIds.length} file).`);
 }
 
 function resolveReplyJid(msg) {
@@ -637,16 +701,27 @@ function resolveReplyJid(msg) {
     }
   }
 
-  // Always prefer normalized @s.whatsapp.net PN over raw @lid in Baileys 6.7.x
-  // because 1-on-1 @lid sends in 6.7.x lack addressing_mode and trigger "Waiting for this message".
   if (remoteJid.endsWith('@lid')) {
+    const normLid = jidNormalizedUser(remoteJid);
+    // If the bot's own `me.lid` is properly configured (with :device), replying to the exact JID
+    // (`@lid` or `@s.whatsapp.net`) that holds the active session avoids LID<->PN ratchet mismatch.
     for (const cand of candidates) {
       const pnJid = normalizeToPnJid(cand);
-      if (pnJid) return pnJid;
+      if (pnJid) {
+        if (lidPreferredForPn.get(pnJid) && activeSocket?.authState?.creds?.me?.lid) {
+          return normLid;
+        }
+        return pnJid;
+      }
     }
-    const cachedPn = lidToPnMap.get(jidNormalizedUser(remoteJid));
-    if (cachedPn) return cachedPn;
-    return remoteJid;
+    const cachedPn = lidToPnMap.get(normLid);
+    if (cachedPn) {
+      if (lidPreferredForPn.get(cachedPn) && activeSocket?.authState?.creds?.me?.lid) {
+        return normLid;
+      }
+      return cachedPn;
+    }
+    return normLid;
   }
 
   if (remoteJid.endsWith('@s.whatsapp.net')) {
@@ -743,6 +818,54 @@ async function handleIncomingChatMessage(sock, msg) {
   }
 }
 
+async function ensureBotOwnLid(sock, saveCreds) {
+  const me = sock?.authState?.creds?.me;
+  if (!me?.id) return;
+
+  // If me.lid already exists, ensure it includes `:device` so `messages-send.js:412` never produces `@lid@lid`
+  if (me.lid) {
+    const fixed = formatMeLidWithDevice(me.lid, me.id);
+    if (fixed && fixed !== me.lid) {
+      me.lid = fixed;
+      await saveCreds();
+    }
+    return;
+  }
+
+  try {
+    const [info] = (await sock.onWhatsApp(me.id)) || [];
+    if (info?.lid) {
+      const formatted = formatMeLidWithDevice(info.lid, me.id);
+      if (formatted) {
+        me.lid = formatted;
+        await saveCreds();
+        console.log(`🆔 LID Bot berhasil disinkronkan: ${formatted}`);
+      }
+    }
+  } catch (_) {}
+}
+
+// One-time automatic cleanup of corrupted Signal session files from pre-fix builds
+// (keeps `creds.json` intact so the user never has to re-enter Pairing Code).
+async function runOneTimeSessionCleanIfNeeded() {
+  const markerPath = path.join(AUTH_DIR, '.clean_v3_done');
+  try {
+    if (fs.existsSync(markerPath) || !fs.existsSync(AUTH_DIR)) return;
+    const files = await fs.promises.readdir(AUTH_DIR);
+    let removed = 0;
+    for (const f of files) {
+      if (f.startsWith('session-') || f.startsWith('sender-key-')) {
+        await fs.promises.rm(path.join(AUTH_DIR, f), { force: true });
+        removed++;
+      }
+    }
+    await fs.promises.writeFile(markerPath, new Date().toISOString());
+    if (removed > 0) {
+      console.log(`🧹 Otomatis membersihkan ${removed} file sesi Signal lama yang tidak sinkron (login tetap aman).`);
+    }
+  } catch (_) {}
+}
+
 async function startWhatsAppBot() {
   if (isStartingSocket) return;
   isStartingSocket = true;
@@ -762,7 +885,12 @@ async function startWhatsAppBot() {
       activeSocket = null;
     }
 
+    await runOneTimeSessionCleanIfNeeded();
+
     const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
+    if (state.creds?.me?.lid && state.creds?.me?.id) {
+      state.creds.me.lid = formatMeLidWithDevice(state.creds.me.lid, state.creds.me.id) || state.creds.me.lid;
+    }
     const { version } = await fetchLatestBaileysVersion();
 
     // If not registered yet, ask for the Bot's WhatsApp phone number BEFORE opening socket
@@ -837,6 +965,7 @@ async function startWhatsAppBot() {
         isWaConnected = true;
         connectedBotNumber = sock.user?.id?.split(':')[0]?.split('@')[0] || cachedPairingPhone || null;
         console.log(`\n✅ Sticko Audio Bot TERHUBUNG ke WhatsApp (Nomor Bot: ${connectedBotNumber || 'aktif'})\n`);
+        ensureBotOwnLid(sock, saveCreds).catch(() => {});
       } else if (connection === 'close') {
         isWaConnected = false;
         const statusCode = lastDisconnect?.error?.output?.statusCode;
@@ -959,7 +1088,7 @@ const server = http.createServer(async (req, res) => {
         return;
       }
 
-      // Resolve canonical WhatsApp JID via onWhatsApp (prevents invalid-JID session failures)
+      // Resolve canonical WhatsApp JID & LID mapping via onWhatsApp
       let targetJid = rawTargetJid;
       try {
         const [waCheck] = await activeSocket.onWhatsApp(rawTargetJid);
@@ -971,7 +1100,10 @@ const server = http.createServer(async (req, res) => {
           return;
         }
         if (waCheck?.jid) {
-          targetJid = waCheck.jid;
+          targetJid = jidNormalizedUser(waCheck.jid);
+        }
+        if (waCheck?.lid && targetJid) {
+          recordLidMapping(waCheck.lid, targetJid);
         }
       } catch (_) {}
 
@@ -1001,6 +1133,23 @@ const server = http.createServer(async (req, res) => {
         const audioB64 = String(item.audioBase64 || '').trim();
         if (!webpB64 || !audioB64) continue;
 
+        // Pace multi-sticker packs & wait if an E2EE retry handshake is in flight so concurrent
+        // `assertSessions(..., true)` calls never clobber each other's newly created Signal ratchet.
+        if (i > 0) {
+          const baseDelay = i === 1 ? 1400 : 850;
+          await sleep(baseDelay);
+          const sinceRetry = Date.now() - lastRetryTimestamp;
+          if (sinceRetry < 2200) {
+            await sleep(2200 - sinceRetry);
+          }
+        }
+
+        // If Sticker #1 triggered an @lid retry from this recipient, switch remaining stickers in batch to their active @lid
+        const effectiveTargetJid =
+          (lidPreferredForPn.get(targetJid) && activeSocket?.authState?.creds?.me?.lid)
+            ? lidPreferredForPn.get(targetJid)
+            : targetJid;
+
         const webpBuffer = Buffer.from(webpB64, 'base64');
         const rawAudioBuffer = Buffer.from(audioB64, 'base64');
         const ext = String(item.audioExt || 'm4a').replace(/[^a-z0-9]/gi, '') || 'm4a';
@@ -1020,7 +1169,7 @@ const server = http.createServer(async (req, res) => {
             durationSec,
           );
 
-          await sendSoundStickerMessage(activeSocket, targetJid, {
+          await sendSoundStickerMessage(activeSocket, effectiveTargetJid, {
             webpBuffer,
             opusBuffer,
             durationSeconds: actualSeconds,
